@@ -1,0 +1,130 @@
+# The playbook is where your domain knowledge lives. The agent is generic; this
+# file is what makes it good at YOUR tickets. Expect to iterate on this weekly
+# for the first couple of months and rarely touch the Python.
+
+name: eps-default
+
+# ---------------------------------------------------------------------------
+# Services: maps a name that appears in tickets to a repo on disk and a New
+# Relic app name. `aliases` are the other things humans call it in tickets.
+# ---------------------------------------------------------------------------
+services:
+  order-service:
+    repo_path: /srv/repos/order-service
+    nr_app_name: order-service-prod
+    aliases: [orders, order api, ordersvc]
+    owner: "#team-orders"
+  loyalty-service:
+    repo_path: /srv/repos/loyalty-service
+    nr_app_name: loyalty-prod
+    aliases: [loyalty, points, rewards]
+    owner: "#team-loyalty"
+  pos-gateway:
+    repo_path: /srv/repos/pos-gateway
+    nr_app_name: pos-gateway-prod
+    aliases: [pos, terminal, register]
+    owner: "#team-pos"
+
+  # Reserved key: ad-hoc SELECT allowlist surfaced by the db_catalog tool.
+  _tables:
+    allow:
+      - main.orders.orders
+      - main.orders.order_lines
+      - main.orders.sync_audit
+      - main.loyalty.members
+      - main.loyalty.transactions
+      - main.pos.terminal_events
+
+# ---------------------------------------------------------------------------
+# Entity patterns: regexes for the identifiers that show up in your tickets.
+# Extraction is deterministic, so the model never has to parse these itself.
+# Use a capture group if you want the value without its label.
+# ---------------------------------------------------------------------------
+entity_patterns:
+  order_id: '\border[_\s-]?(?:id|number|no)?\W{0,3}([A-Z0-9]{8,20})\b'
+  member_id: '\b(?:member|loyalty)[_\s-]?id\W{0,3}(\d{6,12})\b'
+  store_id: '\b(?:store|site|location)[_\s-]?(?:id|code)?\W{0,3}(\d{3,6})\b'
+  terminal_id: '\bterminal\W{0,3}([A-Z]{2,4}-\d{2,5})\b'
+  transaction_id: '\btxn[_\s-]?(?:id)?\W{0,3}([A-Za-z0-9]{10,24})\b'
+
+# ---------------------------------------------------------------------------
+# SQL templates: the safe, parameterised path. Every one of these is a question
+# a support engineer actually asks. Add a template every time the agent writes
+# the same ad-hoc query twice.
+# ---------------------------------------------------------------------------
+sql_templates:
+  order_by_id:
+    description: "Full order record plus its sync audit trail."
+    parameters:
+      order_id: "external order identifier"
+    sql: |
+      SELECT o.order_id, o.store_id, o.status, o.total_cents, o.created_at,
+             o.updated_at, a.attempt_no, a.result, a.error_code, a.attempted_at
+      FROM main.orders.orders o
+      LEFT JOIN main.orders.sync_audit a ON a.order_id = o.order_id
+      WHERE o.order_id = :order_id
+      ORDER BY a.attempted_at DESC
+
+  orders_stuck_in_status:
+    description: "Blast radius: how many orders share a bad status in a window."
+    parameters:
+      status: "order status to count"
+      since: "ISO timestamp lower bound"
+    sql: |
+      SELECT o.store_id, count(*) AS order_count,
+             min(o.created_at) AS first_seen, max(o.created_at) AS last_seen
+      FROM main.orders.orders o
+      WHERE o.status = :status AND o.created_at >= :since
+      GROUP BY o.store_id
+      ORDER BY order_count DESC
+
+  loyalty_txn_for_order:
+    description: "Does a loyalty transaction exist for this order? Catches the
+      classic 'order synced but points never awarded' class of bug."
+    parameters:
+      order_id: "external order identifier"
+    sql: |
+      SELECT t.txn_id, t.member_id, t.points_delta, t.source_order_id,
+             t.created_at, t.status
+      FROM main.loyalty.transactions t
+      WHERE t.source_order_id = :order_id
+
+  orphaned_syncs:
+    description: "Orders marked synced with no matching loyalty transaction."
+    parameters:
+      since: "ISO timestamp lower bound"
+    sql: |
+      SELECT count(*) AS orphaned, min(o.created_at) AS first_seen
+      FROM main.orders.orders o
+      LEFT JOIN main.loyalty.transactions t ON t.source_order_id = o.order_id
+      WHERE o.status = 'synced' AND t.txn_id IS NULL AND o.created_at >= :since
+
+# ---------------------------------------------------------------------------
+# NRQL templates for reference / reuse in nr_query.
+# ---------------------------------------------------------------------------
+nrql_templates:
+  errors_by_class: |
+    SELECT count(*) FROM TransactionError
+    WHERE appName = '{service}' FACET error.class, error.message
+  log_for_entity: |
+    SELECT timestamp, level, message, trace.id, service.name FROM Log
+    WHERE message LIKE '%{entity}%' ORDER BY timestamp
+  latency_shift: |
+    SELECT percentile(duration, 50, 95, 99) FROM Transaction
+    WHERE appName = '{service}' TIMESERIES 5 minutes
+
+# ---------------------------------------------------------------------------
+# Free-text notes injected into the prompt. Put the tribal knowledge here: the
+# known-flaky dependency, the misleading log line, the retry that hides errors.
+# This is the single highest-leverage field in the file.
+# ---------------------------------------------------------------------------
+triage_notes: |
+  - `pos-gateway` retries 3x with backoff and only logs at WARN on the first two
+    attempts. A ticket describing "intermittent failure" is often a third-attempt
+    failure; always widen the window to at least 5 minutes around the timestamp.
+  - `orders.status = 'synced'` means "we sent it", NOT "loyalty accepted it".
+    Confirm with `loyalty_txn_for_order` before concluding the sync worked.
+  - Store IDs under 1000 are test stores. Tickets referencing them are almost
+    never production incidents.
+  - Timestamps in POS logs are terminal-local, not UTC. Cross-check `store_id`
+    against the store timezone before correlating with New Relic.
