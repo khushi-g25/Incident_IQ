@@ -13,6 +13,8 @@ axes: turns, dollars, and tool calls.
 from __future__ import annotations
 
 import json
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,11 @@ SYSTEM_PROMPT_PATH = REPO_ROOT / "prompts/system.md"
 TEXT_ATTACHMENT_TYPES = ("text/", "application/json", "application/xml")
 
 
+def _log(msg: str) -> None:
+    """Lightweight progress line to stderr, timestamped, flushed immediately."""
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+
+
 @dataclass
 class TriageOutcome:
     ticket: str
@@ -56,13 +63,20 @@ async def triage(
     settings: Settings,
     post: bool | None = None,
 ) -> TriageOutcome:
+    t0 = time.time()
+    _log(f"🚀 starting triage for {ticket_key} (model={settings.agent.model})")
     jira = JiraClient(settings.jira)
     redactor = Redactor()
     trace = RunTrace(ticket=ticket_key)
 
     # ---- Phase 1: intake -------------------------------------------------
+    _log(f"📥 [intake] fetching Jira issue {ticket_key} ...")
     issue = jira.get_issue(ticket_key)
-    raw_text = issue.as_prompt_text() + _attachment_text(jira, issue) #fetches the ticket text and the attachment text
+    _log(f"📥 [intake] fetched issue: {issue.summary!r} "
+         f"({len(issue.attachments)} attachment(s))")
+    attach_text = _attachment_text(jira, issue)
+    raw_text = issue.as_prompt_text() + attach_text
+    _log("🔎 [intake] extracting entities/services from ticket text ...")
     brief = extract_brief(
         key=issue.key,
         summary=issue.summary,
@@ -70,6 +84,7 @@ async def triage(
         entity_patterns=settings.playbook.entity_patterns,
         services=settings.playbook.services,
     )
+    _log(f"🔎 [intake] triageable={brief.is_triageable} in {time.time()-t0:.1f}s")
 
     # ---- Phase 2: gate ---------------------------------------------------
     if not brief.is_triageable:
@@ -78,6 +93,7 @@ async def triage(
             "Nothing to correlate against logs or data — needs more detail from "
             "the reporter before an automated pass is worth running."
         )
+        _log(f"⛔ [gate] rejecting ticket: {reason}")
         return TriageOutcome(
             ticket=ticket_key,
             run_id=trace.run_id,
@@ -88,10 +104,13 @@ async def triage(
             cost_usd=0.0,
             skipped_reason=reason,
         )
+    _log("✅ [gate] ticket passed — proceeding to agent")
 
     # ---- Phase 3: agent loop ---------------------------------------------
+    _log("🛠️  [setup] building tools (New Relic, Jira search) ...")
     server, allowed = build_tools(settings, redactor, trace)
     repo_roots = settings.playbook.repo_paths()
+    _log(f"🛠️  [setup] tools ready: {', '.join(a.split('__')[-1] for a in allowed)}")
 
     options = ClaudeAgentOptions(
         system_prompt={
@@ -113,28 +132,45 @@ async def triage(
         max_turns=settings.agent.max_turns,
         max_budget_usd=settings.agent.max_budget_usd,
         output_format={"type": "json_schema", "schema": REPORT_SCHEMA},
-        env={"API_TIMEOUT_MS": "180000"},
+        env={"API_TIMEOUT_MS": "180000", **settings.agent.provider_env()},
     )
 
     prompt = _build_prompt(redactor.scrub(raw_text), brief, settings)
 
     report: dict[str, Any] | None = None
     narration: list[str] = []
+    prev_tool_count = 0
 
+    _log(f"🤖 [agent] querying {settings.agent.model} "
+         f"(max_turns={settings.agent.max_turns}, budget=${settings.agent.max_budget_usd}) ...")
+    agent_t0 = time.time()
     async with ClaudeSDKClient(options=options) as client:
         await client.query(prompt)
         async for message in client.receive_response():
             if isinstance(message, AssistantMessage):
                 for block in message.content:
-                    if isinstance(block, TextBlock):
+                    if isinstance(block, TextBlock) and block.text.strip():
                         narration.append(block.text)
+                        preview = block.text.strip().replace("\n", " ")[:160]
+                        _log(f"🤖 [agent] says: {preview}")
+                # surface any new tool calls recorded in the trace since last check
+                if len(trace.entries) > prev_tool_count:
+                    for entry in trace.entries[prev_tool_count:]:
+                        status = f"error: {entry.error}" if entry.error else (entry.result_summary or "ok")
+                        _log(f"🔧 [tool] {entry.tool} ({entry.elapsed_ms}ms) -> {status}")
+                    prev_tool_count = len(trace.entries)
             elif isinstance(message, ResultMessage):
                 trace.cost_usd = message.total_cost_usd or 0.0
                 report = _extract_report(message)
+                _log(f"🏁 [agent] finished: cost=${trace.cost_usd:.4f} "
+                     f"report_produced={report is not None}")
 
     trace.turns = len(trace.entries)
+    _log(f"⏱️  [agent] loop took {time.time()-agent_t0:.1f}s, "
+         f"{trace.turns} tool call(s) total")
 
     # ---- Phase 4: render + hand off --------------------------------------
+    _log("📝 [render] building final markdown report ...")
     if report is None:
         markdown = (
             "*Automated triage did not produce a structured report.*\n\n"
@@ -147,7 +183,14 @@ async def triage(
         )
 
     should_post = (not settings.dry_run) if post is None else post
+    if should_post:
+        _log(f"📤 [post] posting comment to {ticket_key} ...")
+    else:
+        _log("📤 [post] dry run — not posting to Jira")
     comment_id = jira.add_comment(ticket_key, markdown) if should_post else None
+
+    _log(f"✅ done with {ticket_key} in {time.time()-t0:.1f}s total "
+         f"(cost=${trace.cost_usd:.4f})")
 
     return TriageOutcome(
         ticket=ticket_key,
@@ -189,7 +232,9 @@ def _attachment_text(jira: JiraClient, issue: JiraIssue, cap: int = 3) -> str:
         try:
             body = jira.fetch_attachment_text(att["content"])
         except Exception:  # noqa: BLE001 - a bad attachment must not kill the run
+            _log(f"⚠️  [intake] failed to fetch attachment {name!r}")
             continue
+        _log(f"📎 [intake] fetched attachment {name!r} ({len(body)} chars)")
         chunks.append(f"\n## Attachment: {name}\n```\n{body[:60_000]}\n```")
     return "".join(chunks)
 

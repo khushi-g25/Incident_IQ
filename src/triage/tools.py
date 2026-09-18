@@ -23,7 +23,7 @@ from typing import Any
 
 from claude_agent_sdk import ToolAnnotations, create_sdk_mcp_server, tool
 
-from .clients.databricks import DatabricksClient, SqlRejected
+# from .clients.databricks import DatabricksClient, SqlRejected
 from .clients.jira import JiraClient
 from .clients.newrelic import NewRelicClient, NrqlRejected
 from .config import Settings
@@ -51,7 +51,7 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
     """Returns (mcp_server_config, allowed_tool_names)."""
 
     nr = NewRelicClient(settings.newrelic)
-    db = DatabricksClient(settings.databricks)
+    # db = DatabricksClient(settings.databricks)
     jira = JiraClient(settings.jira)
     pb = settings.playbook
 
@@ -142,84 +142,85 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
         return _text(merged)
 
     # ---------------------------------------------------------------- Databricks
+    # (Disabled for now - not using Databricks in current flow)
 
-    @tool(
-        "db_catalog",
-        "List the tables you are allowed to read, with their purpose and key "
-        "columns. Call this before writing any SQL — do not guess table names.",
-        {},
-        annotations=_READ_ONLY,
-    )
-    async def db_catalog(args: dict[str, Any]) -> dict[str, Any]:
-        lines = ["Curated read-only tables:"]
-        for name, meta in (pb.sql_templates or {}).items():
-            lines.append(f"\n- template `{name}`: {meta.get('description', '')}")
-            lines.append(f"  params: {list((meta.get('parameters') or {}).keys())}")
-        lines.append("\nAd-hoc SELECTs are permitted on these tables only:")
-        for t in (pb.services.get("_tables", {}) or {}).get("allow", []):
-            lines.append(f"  {t}")
-        return _text("\n".join(lines))
-
-    @tool(
-        "db_template",
-        "Run a named, parameterised query from the playbook. Safest way to pull "
-        "records for an entity you extracted from the ticket. Pass params as a "
-        "JSON object of name -> value.",
-        {"name": str, "params": str},
-        annotations=_READ_ONLY,
-    )
-    async def db_template(args: dict[str, Any]) -> dict[str, Any]:
-        tpl = (pb.sql_templates or {}).get(args["name"])
-        if not tpl:
-            return _text(
-                f"No template named {args['name']!r}. Available: "
-                f"{list((pb.sql_templates or {}).keys())}",
-                is_error=True,
-            )
-        try:
-            params = json.loads(args.get("params") or "{}")
-        except json.JSONDecodeError as e:
-            return _text(f"params is not valid JSON: {e}", is_error=True)
-        missing = set(tpl.get("parameters", {})) - set(params)
-        if missing:
-            return _text(f"Missing parameters: {sorted(missing)}", is_error=True)
-        try:
-            res = db.query(tpl["sql"], parameters=params)
-        except (SqlRejected, RuntimeError, TimeoutError) as e:
-            trace.add("db_template", args, error=str(e))
-            return _text(f"Query failed: {e}", is_error=True)
-        trace.add(
-            "db_template",
-            {"name": args["name"], "params": params},
-            result_summary=f"{res.row_count} rows",
-            evidence_link=f"{settings.databricks.host}/sql/history?statementId="
-            f"{res.statement_id}",
-        )
-        return _text(redactor.scrub(res.as_markdown()))
-
-    @tool(
-        "db_query",
-        "Escape hatch: run an ad-hoc read-only SELECT. Use named parameter "
-        "markers (:order_id) and pass values in `params` — never interpolate "
-        "values from the ticket into the SQL string. Prefer db_template.",
-        {"sql": str, "params": str, "purpose": str},
-        annotations=_READ_ONLY,
-    )
-    async def db_query(args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            params = json.loads(args.get("params") or "{}")
-            res = db.query(args["sql"], parameters=params or None)
-        except (SqlRejected, RuntimeError, TimeoutError, json.JSONDecodeError) as e:
-            trace.add("db_query", args, error=str(e))
-            return _text(f"Query rejected or failed: {e}", is_error=True)
-        trace.add(
-            "db_query",
-            {"sql": res.statement, "params": params, "purpose": args.get("purpose")},
-            result_summary=f"{res.row_count} rows",
-            evidence_link=f"{settings.databricks.host}/sql/history?statementId="
-            f"{res.statement_id}",
-        )
-        return _text(redactor.scrub(res.as_markdown()))
+    # @tool(
+    #     "db_catalog",
+    #     "List the tables you are allowed to read, with their purpose and key "
+    #     "columns. Call this before writing any SQL — do not guess table names.",
+    #     {},
+    #     annotations=_READ_ONLY,
+    # )
+    # async def db_catalog(args: dict[str, Any]) -> dict[str, Any]:
+    #     lines = ["Curated read-only tables:"]
+    #     for name, meta in (pb.sql_templates or {}).items():
+    #         lines.append(f"\n- template `{name}`: {meta.get('description', '')}")
+    #         lines.append(f"  params: {list((meta.get('parameters') or {}).keys())}")
+    #     lines.append("\nAd-hoc SELECTs are permitted on these tables only:")
+    #     for t in (pb.services.get("_tables", {}) or {}).get("allow", []):
+    #         lines.append(f"  {t}")
+    #     return _text("\n".join(lines))
+    #
+    # @tool(
+    #     "db_template",
+    #     "Run a named, parameterised query from the playbook. Safest way to pull "
+    #     "records for an entity you extracted from the ticket. Pass params as a "
+    #     "JSON object of name -> value.",
+    #     {"name": str, "params": str},
+    #     annotations=_READ_ONLY,
+    # )
+    # async def db_template(args: dict[str, Any]) -> dict[str, Any]:
+    #     tpl = (pb.sql_templates or {}).get(args["name"])
+    #     if not tpl:
+    #         return _text(
+    #             f"No template named {args['name']!r}. Available: "
+    #             f"{list((pb.sql_templates or {}).keys())}",
+    #             is_error=True,
+    #         )
+    #     try:
+    #         params = json.loads(args.get("params") or "{}")
+    #     except json.JSONDecodeError as e:
+    #         return _text(f"params is not valid JSON: {e}", is_error=True)
+    #     missing = set(tpl.get("parameters", {})) - set(params)
+    #     if missing:
+    #         return _text(f"Missing parameters: {sorted(missing)}", is_error=True)
+    #     try:
+    #         res = db.query(tpl["sql"], parameters=params)
+    #     except (SqlRejected, RuntimeError, TimeoutError) as e:
+    #         trace.add("db_template", args, error=str(e))
+    #         return _text(f"Query failed: {e}", is_error=True)
+    #     trace.add(
+    #         "db_template",
+    #         {"name": args["name"], "params": params},
+    #         result_summary=f"{res.row_count} rows",
+    #         evidence_link=f"{settings.databricks.host}/sql/history?statementId="
+    #         f"{res.statement_id}",
+    #     )
+    #     return _text(redactor.scrub(res.as_markdown()))
+    #
+    # @tool(
+    #     "db_query",
+    #     "Escape hatch: run an ad-hoc read-only SELECT. Use named parameter "
+    #     "markers (:order_id) and pass values in `params` — never interpolate "
+    #     "values from the ticket into the SQL string. Prefer db_template.",
+    #     {"sql": str, "params": str, "purpose": str},
+    #     annotations=_READ_ONLY,
+    # )
+    # async def db_query(args: dict[str, Any]) -> dict[str, Any]:
+    #     try:
+    #         params = json.loads(args.get("params") or "{}")
+    #         res = db.query(args["sql"], parameters=params or None)
+    #     except (SqlRejected, RuntimeError, TimeoutError, json.JSONDecodeError) as e:
+    #         trace.add("db_query", args, error=str(e))
+    #         return _text(f"Query rejected or failed: {e}", is_error=True)
+    #     trace.add(
+    #         "db_query",
+    #         {"sql": res.statement, "params": params, "purpose": args.get("purpose")},
+    #         result_summary=f"{res.row_count} rows",
+    #         evidence_link=f"{settings.databricks.host}/sql/history?statementId="
+    #         f"{res.statement_id}",
+    #     )
+    #     return _text(redactor.scrub(res.as_markdown()))
 
     # ---------------------------------------------------------------------- Jira
 
@@ -260,9 +261,9 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
             nr_query,
             nr_find_errors,
             nr_trace,
-            db_catalog,
-            db_template,
-            db_query,
+            # db_catalog,
+            # db_template,
+            # db_query,
             jira_related_tickets,
         ],
     )
@@ -271,9 +272,9 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
         "mcp__triage__nr_query",
         "mcp__triage__nr_find_errors",
         "mcp__triage__nr_trace",
-        "mcp__triage__db_catalog",
-        "mcp__triage__db_template",
-        "mcp__triage__db_query",
+        # "mcp__triage__db_catalog",
+        # "mcp__triage__db_template",
+        # "mcp__triage__db_query",
         "mcp__triage__jira_related_tickets",
         # Built-ins for the code-reading leg.
         "Read",
