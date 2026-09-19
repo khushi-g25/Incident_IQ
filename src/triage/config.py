@@ -56,6 +56,13 @@ class AgentConfig:
     effort: str = "high"
 
 
+@dataclass(frozen=True)
+class GithubConfig:
+    token: str             # fine-grained PAT: Contents:Read + Pull requests:Read
+    api_url: str = "https://api.github.com"
+    graphql_url: str = "https://api.github.com/graphql"
+
+
 @dataclass
 class Playbook:
     """Domain knowledge that makes the agent useful on *your* tickets."""
@@ -83,6 +90,7 @@ class Settings:
     databricks: DatabricksConfig
     agent: AgentConfig
     playbook: Playbook
+    github: GithubConfig | None = None   # optional: enables gh_* tools, no local clone needed
     dry_run: bool = True          # never writes to Jira unless explicitly disabled
     run_dir: Path = REPO_ROOT / ".runs"
 
@@ -118,5 +126,18 @@ class Settings:
                 max_budget_usd=float(os.environ.get("TRIAGE_MAX_BUDGET_USD", "2.00")),
             ),
             playbook=Playbook.load(pb),
+            github=_github_from_env(),
             dry_run=os.environ.get("TRIAGE_DRY_RUN", "1") != "0",
         )
+
+
+def _github_from_env() -> GithubConfig | None:
+    """GitHub is optional: only wired up if a token is present."""
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        return None
+    return GithubConfig(
+        token=token,
+        api_url=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+        graphql_url=os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql"),
+    )

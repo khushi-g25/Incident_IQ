@@ -9,21 +9,23 @@ name: eps-default
 # Relic app name. `aliases` are the other things humans call it in tickets.
 # ---------------------------------------------------------------------------
 services:
-  order-service:
-    repo_path: /srv/repos/order-service
-    nr_app_name: order-service-prod
-    aliases: [orders, order api, ordersvc]
-    owner: "#team-orders"
-  loyalty-service:
-    repo_path: /srv/repos/loyalty-service
-    nr_app_name: loyalty-prod
-    aliases: [loyalty, points, rewards]
-    owner: "#team-loyalty"
-  pos-gateway:
-    repo_path: /srv/repos/pos-gateway
-    nr_app_name: pos-gateway-prod
-    aliases: [pos, terminal, register]
-    owner: "#team-pos"
+  # repo_path is left unset until these are cloned locally — Read/Grep/Glob
+  # need a clone, but the gh_* tools work against github_repo either way.
+  punchh-server:
+    github_repo: punchh/punchh-server
+    aliases: [punchh server, core, monolith]
+  segments-service:
+    github_repo: punchh/segments-service
+    aliases: [segments, segmentation]
+  script-tasks:
+    github_repo: punchh/script-tasks
+    aliases: [script tasks, scripts]
+  punchh-ui-monorepo-vue3:
+    github_repo: punchh/punchh-ui-monorepo-vue3
+    aliases: [ui monorepo, vue3 ui, frontend]
+  notification-service:
+    github_repo: punchh/notification-service
+    aliases: [notifications, notif service]
 
   # Reserved key: ad-hoc SELECT allowlist surfaced by the db_catalog tool.
   _tables:
@@ -54,9 +56,9 @@ entity_patterns:
 # ---------------------------------------------------------------------------
 sql_templates:
   order_by_id:
-    description: "Full order record plus its sync audit trail."
+    description: 'Full order record plus its sync audit trail.'
     parameters:
-      order_id: "external order identifier"
+      order_id: 'external order identifier'
     sql: |
       SELECT o.order_id, o.store_id, o.status, o.total_cents, o.created_at,
              o.updated_at, a.attempt_no, a.result, a.error_code, a.attempted_at
@@ -66,10 +68,10 @@ sql_templates:
       ORDER BY a.attempted_at DESC
 
   orders_stuck_in_status:
-    description: "Blast radius: how many orders share a bad status in a window."
+    description: 'Blast radius: how many orders share a bad status in a window.'
     parameters:
-      status: "order status to count"
-      since: "ISO timestamp lower bound"
+      status: 'order status to count'
+      since: 'ISO timestamp lower bound'
     sql: |
       SELECT o.store_id, count(*) AS order_count,
              min(o.created_at) AS first_seen, max(o.created_at) AS last_seen
@@ -82,7 +84,7 @@ sql_templates:
     description: "Does a loyalty transaction exist for this order? Catches the
       classic 'order synced but points never awarded' class of bug."
     parameters:
-      order_id: "external order identifier"
+      order_id: 'external order identifier'
     sql: |
       SELECT t.txn_id, t.member_id, t.points_delta, t.source_order_id,
              t.created_at, t.status
@@ -90,9 +92,9 @@ sql_templates:
       WHERE t.source_order_id = :order_id
 
   orphaned_syncs:
-    description: "Orders marked synced with no matching loyalty transaction."
+    description: 'Orders marked synced with no matching loyalty transaction.'
     parameters:
-      since: "ISO timestamp lower bound"
+      since: 'ISO timestamp lower bound'
     sql: |
       SELECT count(*) AS orphaned, min(o.created_at) AS first_seen
       FROM main.orders.orders o
