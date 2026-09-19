@@ -8,8 +8,12 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Load environment variables from .env file
+load_dotenv(REPO_ROOT / ".env")
 
 
 def _req(name: str) -> str:
@@ -19,12 +23,25 @@ def _req(name: str) -> str:
     return val
 
 
+def _bedrock_enabled() -> bool:
+    """Bedrock is used when asked for explicitly, or when the only credential
+    present is a Bedrock one."""
+    flag = os.environ.get("CLAUDE_CODE_USE_BEDROCK", "").strip().lower()
+    if flag in {"1", "true", "yes"}:
+        return True
+    if flag in {"0", "false", "no"}:
+        return False
+    return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK")) and not os.environ.get(
+        "ANTHROPIC_API_KEY"
+    )
+
+
 @dataclass(frozen=True)
 class JiraConfig:
     base_url: str          # https://yourcompany.atlassian.net
     email: str
     api_token: str
-    project_key: str = "EPS"
+    project_key: str = "SQ"
 
 
 @dataclass(frozen=True)
@@ -36,6 +53,8 @@ class NewRelicConfig:
     max_rows: int = 200
 
 
+# Kept importable (clients/databricks.py + tests reference it directly) even
+# though Settings.databricks and the db_* tools are disabled below.
 @dataclass(frozen=True)
 class DatabricksConfig:
     host: str              # https://dbc-xxxx.cloud.databricks.com
@@ -50,10 +69,40 @@ class DatabricksConfig:
 @dataclass(frozen=True)
 class AgentConfig:
     model: str = "sonnet"
-    fallback_model: str = "haiku"
+    fallback_model: str | None = None
     max_turns: int = 40
     max_budget_usd: float = 2.00
     effort: str = "high"
+    # --- provider auth (Anthropic API by default, Amazon Bedrock if enabled) ---
+    use_bedrock: bool = False
+    aws_region: str | None = None
+    aws_bearer_token_bedrock: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_session_token: str | None = None
+    aws_profile: str | None = None
+
+    def provider_env(self) -> dict[str, str]:
+        """Env vars the Claude Code subprocess needs to reach the right provider.
+
+        The SDK spawns a Node CLI as a child process; anything it needs for auth
+        has to be handed over explicitly rather than assumed to be inherited.
+        """
+        if not self.use_bedrock:
+            return {}
+        env: dict[str, str] = {"CLAUDE_CODE_USE_BEDROCK": "1"}
+        for key, val in (
+            ("AWS_REGION", self.aws_region),
+            ("AWS_DEFAULT_REGION", self.aws_region),
+            ("AWS_BEARER_TOKEN_BEDROCK", self.aws_bearer_token_bedrock),
+            ("AWS_ACCESS_KEY_ID", self.aws_access_key_id),
+            ("AWS_SECRET_ACCESS_KEY", self.aws_secret_access_key),
+            ("AWS_SESSION_TOKEN", self.aws_session_token),
+            ("AWS_PROFILE", self.aws_profile),
+        ):
+            if val:
+                env[key] = val
+        return env
 
 
 @dataclass(frozen=True)
@@ -72,6 +121,8 @@ class Playbook:
     nrql_templates: dict[str, str] = field(default_factory=dict)
     sql_templates: dict[str, dict[str, Any]] = field(default_factory=dict)
     entity_patterns: dict[str, str] = field(default_factory=dict)
+    naming_conventions: dict[str, str] = field(default_factory=dict)
+    playbooks: dict[str, dict[str, Any]] = field(default_factory=dict)
     triage_notes: str = ""
 
     @classmethod
@@ -87,7 +138,7 @@ class Playbook:
 class Settings:
     jira: JiraConfig
     newrelic: NewRelicConfig
-    databricks: DatabricksConfig
+    # databricks: DatabricksConfig
     agent: AgentConfig
     playbook: Playbook
     github: GithubConfig | None = None   # optional: enables gh_* tools, no local clone needed
@@ -113,17 +164,26 @@ class Settings:
                     "NEW_RELIC_ENDPOINT", "https://api.newrelic.com/graphql"
                 ),
             ),
-            databricks=DatabricksConfig(
-                host=_req("DATABRICKS_HOST").rstrip("/"),
-                token=_req("DATABRICKS_TOKEN"),
-                warehouse_id=_req("DATABRICKS_WAREHOUSE_ID"),
-                catalog=os.environ.get("DATABRICKS_CATALOG"),
-                schema=os.environ.get("DATABRICKS_SCHEMA"),
-            ),
+            # databricks=DatabricksConfig(
+            #     host=_req("DATABRICKS_HOST").rstrip("/"),
+            #     token=_req("DATABRICKS_TOKEN"),
+            #     warehouse_id=_req("DATABRICKS_WAREHOUSE_ID"),
+            #     catalog=os.environ.get("DATABRICKS_CATALOG"),
+            #     schema=os.environ.get("DATABRICKS_SCHEMA"),
+            # ),
             agent=AgentConfig(
                 model=os.environ.get("TRIAGE_MODEL", "sonnet"),
+                fallback_model=os.environ.get("TRIAGE_FALLBACK_MODEL") or None,
                 max_turns=int(os.environ.get("TRIAGE_MAX_TURNS", "40")),
                 max_budget_usd=float(os.environ.get("TRIAGE_MAX_BUDGET_USD", "2.00")),
+                use_bedrock=_bedrock_enabled(),
+                aws_region=os.environ.get("AWS_REGION")
+                or os.environ.get("AWS_DEFAULT_REGION"),
+                aws_bearer_token_bedrock=os.environ.get("AWS_BEARER_TOKEN_BEDROCK"),
+                aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+                aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                aws_session_token=os.environ.get("AWS_SESSION_TOKEN"),
+                aws_profile=os.environ.get("AWS_PROFILE"),
             ),
             playbook=Playbook.load(pb),
             github=_github_from_env(),

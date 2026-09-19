@@ -1,132 +1,330 @@
-# The playbook is where your domain knowledge lives. The agent is generic; this
-# file is what makes it good at YOUR tickets. Expect to iterate on this weekly
-# for the first couple of months and rarely touch the Python.
+# eps.yaml — Agentic triage config for the EPS project
+# Flow: Jira (EPS-*) -> New Relic (NRQL) -> Databricks SQL
+# Repos live under /Users/Khushi.Gupta/workspace/segment_flow
 
-name: eps-default
+name: eps-production
 
-# ---------------------------------------------------------------------------
-# Services: maps a name that appears in tickets to a repo on disk and a New
-# Relic app name. `aliases` are the other things humans call it in tickets.
-# ---------------------------------------------------------------------------
 services:
-  # repo_path is left unset until these are cloned locally — Read/Grep/Glob
-  # need a clone, but the gh_* tools work against github_repo either way.
-  punchh-server:
-    github_repo: punchh/punchh-server
-    aliases: [punchh server, core, monolith]
-  segments-service:
-    github_repo: punchh/segments-service
-    aliases: [segments, segmentation]
-  script-tasks:
-    github_repo: punchh/script-tasks
-    aliases: [script tasks, scripts]
-  punchh-ui-monorepo-vue3:
-    github_repo: punchh/punchh-ui-monorepo-vue3
-    aliases: [ui monorepo, vue3 ui, frontend]
-  notification-service:
-    github_repo: punchh/notification-service
-    aliases: [notifications, notif service]
+  campaign-service:
+    repo_path: /Users/Khushi.Gupta/workspace/segment_flow/campaign-service
+    github_repo: punchh/campaign-service
+    nr_app_name: Campaign Workers
+    aliases: [campaign service, campaigns, cs, campaign-worker, campaign workers]
+    owner: "#eps-campaigns"
+    notes: |
+      Rails + Sidekiq + Karafka. NR app name comes from ENV['NR_APP_NAME'],
+      so the same codebase reports under several NR apps (see nr_app_variants).
+    nr_app_variants:
+      - Campaign Workers            # generic/triggered campaign execution
+      - Bulk Campaign Workers       # mass gifting / blast sends (each txn ~= 200 users)
+      - Bulk Campaign Workers Fair  # fair-queue variant, used for RPM / SLO analysis
+      - Trigger Campaign Workers    # TCW - job creation from trigger events
+    key_workers:
+      - AnniversaryCampaignWorker
+      - MassGiftingWorker
+      - TriggerCampaignWorker
 
-  # Reserved key: ad-hoc SELECT allowlist surfaced by the db_catalog tool.
+  segments-service:
+    repo_path: /Users/Khushi.Gupta/workspace/segment_flow/segments-service
+    github_repo: punchh/segments-service
+    nr_app_name: segments_loadtest
+    aliases: [segments, segment service, segmentation, segment-definition]
+    owner: "#eps-segments"
+    notes: |
+      Owns segment_definitions / complex_segment_parts. Campaigns resolve their
+      audience here; an empty or stale segment is a common "0 users targeted" cause.
+
+  punchh-server:
+    repo_path: /Users/Khushi.Gupta/workspace/segment_flow/punchh-server
+    github_repo: punchh/punchh-server
+    nr_app_name: Punchh
+    aliases: [punchh, monolith, core, punchh server, ps]
+    owner: "#eps-core"
+    notes: |
+      Monolith of record for businesses, users, redeemables. NR staging/integration
+      apps are "Punchh (staging)" and "Punchh (Integration)".
+
+  csp-foundation:
+    repo_path: /Users/Khushi.Gupta/workspace/segment_flow/csp-foundation
+    # github_repo omitted: current GITHUB_TOKEN gets 404 on punchh/csp-foundation
+    # (repo not selected for the token, name mismatch, or needs its own SSO grant).
+    nr_app_name: csp-foundation
+    aliases: [csp, foundation, graphql gateway]
+    owner: "#eps-platform"
+    notes: Go + gqlgen GraphQL service; fronts several EPS reads.
+
+  punchh-ui-monorepo-vue3:
+    repo_path: /Users/Khushi.Gupta/workspace/segment_flow/punchh-ui-monorepo-vue3
+    github_repo: punchh/punchh-ui-monorepo-vue3
+    nr_app_name: Punchh UI
+    aliases: [ui, admin ui, dashboard, frontend, vue app]
+    owner: "#eps-frontend"
+
+# script-tasks and notification-service are confirmed-accessible GitHub repos
+# (punchh/script-tasks, punchh/notification-service) with no corresponding
+# service entry yet — add one above (repo_path/nr_app_name as needed) once
+# there's a ticket-visible name for them to map from.
+
+naming_conventions:
+  repos: kebab-case (campaign-service, segments-service, csp-foundation)
+  ruby_files: snake_case
+  db_tables: snake_case plural (campaigns, mass_giftings, businesses)
+  nr_app_names: Title Case With Spaces ("Bulk Campaign Workers Fair")
+  workers: CamelCase ending in Worker (AnniversaryCampaignWorker)
+
+entity_patterns:
+  jira_key: '\bEPS-\d{3,6}\b'                                   # EPS-11989
+  campaign_id: '(?i)\bcampaign[ _]?(?:id)?\s*[:#=]?\s*(\d{4,12})\b'   # campaign 449174183
+  mass_gifting_id: '(?i)\bmass[ _]?gift(?:ing)?[ _]?(?:id)?\s*[:#=]?\s*(\d{4,12})\b'
+  business_id: '(?i)\bbusiness[ _]?(?:id)?\s*[:#=]?\s*(\d{1,9})\b'
+  business_slug: "(?i)\\bbusiness[ _]?slug\\s*[:#=]?\\s*['\"]?([a-z0-9][a-z0-9\\-_]{2,60})['\"]?"  # wendys
+  admin_id: '(?i)\badmin[ _]?(?:id)?\s*[:#=]?\s*(\d{1,10})\b'
+  user_id: '(?i)\b(?:user|guest)[ _]?(?:id)?\s*[:#=]?\s*(\d{1,12})\b'
+  segment_definition_id: '(?i)\bsegment(?:[ _]definition)?[ _]?(?:id)?\s*[:#=]?\s*(\d{1,12})\b'
+  sidekiq_job_id: '(?i)\b(?:job|jid|sidekiq[ _]job)[ _]?(?:id)?\s*[:#=]?\s*([0-9a-f]{12,24})\b'
+  sidekiq_batch_id: '(?i)\b(?:sidekiq[ _])?batch[ _]?(?:id)?\s*[:#=]?\s*([0-9A-Za-z_\-]{10,24})\b'
+  worker_name: '\b([A-Z][A-Za-z0-9]*Worker)\b'                  # AnniversaryCampaignWorker
+  new_relic_link: 'https://onenr\.io/[0-9A-Za-z]+'
+  timestamp_utc: '\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:\s*Z|[+-]\d{4})?\b'
+
+sql_templates:
+  campaign_detail:
+    description: >
+      Baseline lookup: what does this campaign actually look like? Use first on any
+      "campaign did not send / sent to wrong people" ticket to confirm type, audience,
+      schedule window and whether it was deactivated.
+    parameters:
+      campaign_id: "campaigns.id from the ticket (see entity_patterns.campaign_id)"
+    sql: |
+      SELECT id, type, sub_type, name, business_id, admin_id,
+             segment_definition_id, redeemable_id, campaign_set_id,
+             start_date, end_date, scheduling_time, timezone,
+             is_blast, global, trigger_event, execution_delay,
+             published_at, deactivated_at, created_at, updated_at
+      FROM punchh_prod.campaign_service.campaigns
+      WHERE id = :campaign_id
+
+  mass_gifting_run:
+    description: >
+      Primary artefact for MassGifting SLO breaches. Shows load (gifts_count) vs
+      elapsed time (processing_start -> processing_end) and the sidekiq batch to
+      pivot back into New Relic.
+    parameters:
+      mass_gifting_id: "mass_giftings.id, or the id surfaced by the MassGiftingData NRQL"
+    sql: |
+      SELECT id, name, status, business_id, admin_id, gift_type,
+             segment_definition_id, gifts_count, emails_sent, notifications_sent,
+             processing_start, started_sending_at, processing_end,
+             TIMESTAMPDIFF(MINUTE, processing_start, processing_end) AS minutes_elapsed,
+             job_id, sidekiq_batch, sidekiq_batch_notification,
+             start_time, timezone, created_at, updated_at
+      FROM punchh_prod.campaign_service.mass_giftings
+      WHERE id = :mass_gifting_id
+
+  mass_giftings_breaching_slo:
+    description: >
+      "How many are stuck in this broken state?" — mass gifting runs that took
+      longer than 2 hours for a load under 10M rows (the SLO definition), plus any
+      run still without a processing_end. Run over the ticket's incident window.
+    parameters:
+      start_ts: "window start, UTC 'YYYY-MM-DD HH:MM:SS'"
+      end_ts: "window end, UTC 'YYYY-MM-DD HH:MM:SS'"
+    sql: |
+      SELECT business_id, status, COUNT(*) AS runs,
+             SUM(CASE WHEN processing_end IS NULL THEN 1 ELSE 0 END) AS still_running,
+             MAX(TIMESTAMPDIFF(MINUTE, processing_start, COALESCE(processing_end, CURRENT_TIMESTAMP()))) AS worst_minutes,
+             SUM(gifts_count) AS total_gifts
+      FROM punchh_prod.campaign_service.mass_giftings
+      WHERE processing_start BETWEEN :start_ts AND :end_ts
+        AND COALESCE(gifts_count, 0) < 10000000
+        AND TIMESTAMPDIFF(MINUTE, processing_start, COALESCE(processing_end, CURRENT_TIMESTAMP())) > 120
+      GROUP BY business_id, status
+      ORDER BY worst_minutes DESC
+
+  business_lookup:
+    description: >
+      Translate between the business_slug used in NRQL facets and the business_id
+      used in SQL. Always run this before cross-referencing New Relic with the DB.
+    parameters:
+      business_slug: "slug as it appears in the NRQL facet, e.g. 'wendys'"
+    sql: |
+      SELECT id, name, slug, time_zone, created_at
+      FROM punchh_prod.punchh.businesses
+      WHERE slug = :business_slug OR CAST(id AS STRING) = :business_slug
+
+  campaigns_active_for_business_window:
+    description: >
+      "Which campaigns could have produced this job spike?" — every campaign for a
+      business that was live during the incident window. Pair with the TCW
+      facet-by-name NRQL to attribute queue depth to a campaign.
+    parameters:
+      business_id: "businesses.id"
+      start_ts: "window start, UTC"
+      end_ts: "window end, UTC"
+    sql: |
+      SELECT c.id, c.type, c.sub_type, c.name, c.is_blast, c.trigger_event,
+             c.segment_definition_id, c.scheduling_time, c.timezone,
+             c.start_date, c.end_date, c.published_at, c.deactivated_at
+      FROM punchh_prod.campaign_service.campaigns c
+      WHERE c.business_id = :business_id
+        AND c.published_at IS NOT NULL
+        AND (c.deactivated_at IS NULL OR c.deactivated_at >= :start_ts)
+        AND c.start_date <= DATE(:end_ts)
+        AND (c.end_date IS NULL OR c.end_date >= DATE(:start_ts))
+      ORDER BY c.published_at DESC
+
+  campaign_statistics_window:
+    description: >
+      Sent/delivered counts per campaign, to confirm whether a "nothing sent"
+      report is a send failure or a reporting-only problem.
+    parameters:
+      campaign_id: "campaigns.id"
+      start_ts: "window start, UTC"
+      end_ts: "window end, UTC"
+    sql: |
+      SELECT campaign_id, created_at, updated_at, *
+      FROM punchh_prod.campaign_service.campaign_statistics
+      WHERE campaign_id = :campaign_id
+        AND updated_at BETWEEN :start_ts AND :end_ts
+      ORDER BY updated_at DESC
+
+nrql_templates:
+  users_targeted_bulk:
+    description: "Approx users targeted by Bulk Campaign Workers (1 txn ~= 200 users)."
+    nrql: |
+      SELECT count(*) * 200 FROM Transaction
+      WHERE appName = 'Bulk Campaign Workers'
+      SINCE '{start}' UNTIL '{end}' LIMIT MAX
+
+  service_error_count:
+    description: "Error volume for any service; first sanity check on a new ticket."
+    nrql: |
+      SELECT count(*) FROM Transaction
+      WHERE appName = '{nr_app_name}' AND error = true
+      SINCE '{start}' UNTIL '{end}' LIMIT MAX
+
+  tcw_jobs_by_business:
+    description: "Jobs created per business by Trigger Campaign Workers."
+    nrql: |
+      SELECT count(*) FROM Transaction
+      WHERE appName = 'Trigger Campaign Workers'
+      SINCE '{start}' UNTIL '{end}' FACET business_slug LIMIT MAX
+
+  tcw_jobs_by_campaign:
+    description: "Drill into one business: which campaign generated the jobs."
+    nrql: |
+      SELECT count(*) FROM Transaction
+      WHERE appName = 'Trigger Campaign Workers' AND business_slug = '{business_slug}'
+      SINCE '{start}' UNTIL '{end}' FACET name LIMIT MAX
+
+  mass_gifting_bad_events:
+    description: "SLO-breach records. Gives campaign + business_id to pivot into SQL."
+    nrql: |
+      SELECT * FROM MassGiftingData
+      WHERE event_state = 'Bad'
+      SINCE '{start}' UNTIL '{end}' LIMIT MAX
+
+  mass_gifting_bad_state_legacy:
+    description: "Older records use `state` instead of `event_state`; try both."
+    nrql: |
+      SELECT * FROM MassGiftingData
+      WHERE state = 'Bad'
+      SINCE '{start}' UNTIL '{end}' LIMIT MAX
+
+  worker_job_by_argument:
+    description: "Find a specific worker execution by an id embedded in its arguments."
+    nrql: |
+      SELECT * FROM Transaction
+      WHERE name LIKE '%{worker_name}%' AND arguments LIKE '%{entity_id}%'
+      SINCE '{start}' UNTIL '{end}' LIMIT MAX
+
+  scheduling_job_by_argument:
+    description: "Trace the scheduling hop for an entity id."
+    nrql: |
+      SELECT * FROM Transaction
+      WHERE name LIKE '%schedule%' AND arguments LIKE '{entity_id}%'
+      SINCE '{start}' UNTIL '{end}' LIMIT MAX
+
+  worker_rpm_timeseries:
+    description: >
+      RPM of the fair bulk queue, per worker and per business. Use after
+      mass_gifting_bad_events to identify the worker that starved the queue.
+    nrql: |
+      SELECT count(*) FROM Transaction
+      WHERE appName = 'Bulk Campaign Workers Fair'
+      SINCE '{start}' UNTIL '{end}'
+      TIMESERIES 1 minute FACET name, business_slug LIMIT MAX
+
+  service_logs:
+    description: "Raw log lines for a service during the incident window."
+    nrql: |
+      SELECT * FROM Log WHERE appName = '{nr_app_name}'
+      SINCE '{start}' UNTIL '{end}' LIMIT MAX
+
+playbooks:
+  mass_gifting_slo_breach:
+    trigger: "Ticket mentions MassGifting SLO breach, stuck gifting, or slow blast."
+    definition: "Breach = job took > 2 hours to process a load of < 10M."
+    steps:
+      - "Run nrql_templates.mass_gifting_bad_events over the alert window -> campaign + business_id."
+      - "Run sql_templates.mass_gifting_run for that run: compare gifts_count (load) to processing_start..processing_end (time). Low load + long time confirms a queue problem, not a volume problem."
+      - "Run nrql_templates.worker_rpm_timeseries across the window to see which worker/business dominated 'Bulk Campaign Workers Fair' and when execution actually started and ended."
+      - "Run sql_templates.mass_giftings_breaching_slo to check whether this is a single run or a fleet-wide pattern."
+      - "Report: campaign, business, load, elapsed, the co-tenant worker that consumed the queue."
+  tcw_queue_latency:
+    trigger: "Ticket mentions Trigger Campaign Workers latency or queue backup."
+    definition: "Breach = queue latency rises above threshold and stays elevated."
+    steps:
+      - "nrql_templates.tcw_jobs_by_business over the window -> the noisy business."
+      - "nrql_templates.tcw_jobs_by_campaign for that business_slug -> the noisy campaign/worker."
+      - "sql_templates.business_lookup to map slug -> business_id."
+      - "sql_templates.campaigns_active_for_business_window to confirm which campaign config caused the fan-out (check trigger_event, execution_delay, is_blast, segment_definition_id)."
+
+triage_notes: |
+  - NR app name != repo name. campaign-service reports under four different
+    appName values (Campaign Workers, Bulk Campaign Workers, Bulk Campaign
+    Workers Fair, Trigger Campaign Workers) because app_name is injected via
+    ENV['NR_APP_NAME']. Never filter on 'campaign-service' in NRQL.
+  - Always add `LIMIT MAX`. NRQL silently truncates to 100 rows otherwise and
+    the missing rows are usually the failing ones.
+  - MassGiftingData is the SLO-breach table, not a general log. The state column
+    was renamed: newer events use `event_state = 'Bad'`, older ones use
+    `state = 'Bad'`. Query both before concluding "no breaches".
+  - Timezones: NRQL SINCE/UNTIL without a suffix uses the account timezone, so
+    always pin UTC explicitly ('2026-08-10 20:13:00 Z' or '+0000'). The DB stores
+    UTC, but campaigns.timezone / mass_giftings.timezone and
+    mass_giftings.start_time are business-local strings — a campaign "scheduled
+    at 09:00" will appear hours off in New Relic. Convert before comparing.
+  - mass_giftings.start_time is a string, not a timestamp. Don't sort or compare
+    it as a date.
+  - status = 'completed' on mass_giftings only means the enqueuing finished. Sends
+    can still be in flight; use processing_end plus emails_sent/notifications_sent
+    to judge real completion. Likewise a 200 from the send endpoint only means
+    accepted-for-delivery.
+  - A Transaction row in 'Bulk Campaign Workers' is a batch, not a user. Multiply
+    by ~200 for user counts, and say "approx" in the ticket.
+  - Sidekiq retries mean duplicate Transactions for the same job_id/arguments.
+    Dedupe on sidekiq_batch or job_id before counting failures, otherwise a single
+    poison job looks like an outage.
+  - Low gifts_count with high elapsed time is a noisy-neighbour signal, not a data
+    problem: someone else's worker owned the fair queue. Go to the RPM timeseries.
+  - campaigns.deactivated_at being set explains most "campaign stopped sending"
+    reports; check it before reading any logs.
+  - Ignore load/staging traffic: appName 'Punchh (staging)', 'Punchh (Integration)'
+    and 'segments_loadtest' are non-production and will skew error counts.
+  - EPS ticket bodies often paste a onenr.io short link instead of the NRQL —
+    open it to recover the exact window the reporter looked at.
+
   _tables:
     allow:
-      - main.orders.orders
-      - main.orders.order_lines
-      - main.orders.sync_audit
-      - main.loyalty.members
-      - main.loyalty.transactions
-      - main.pos.terminal_events
-
-# ---------------------------------------------------------------------------
-# Entity patterns: regexes for the identifiers that show up in your tickets.
-# Extraction is deterministic, so the model never has to parse these itself.
-# Use a capture group if you want the value without its label.
-# ---------------------------------------------------------------------------
-entity_patterns:
-  order_id: '\border[_\s-]?(?:id|number|no)?\W{0,3}([A-Z0-9]{8,20})\b'
-  member_id: '\b(?:member|loyalty)[_\s-]?id\W{0,3}(\d{6,12})\b'
-  store_id: '\b(?:store|site|location)[_\s-]?(?:id|code)?\W{0,3}(\d{3,6})\b'
-  terminal_id: '\bterminal\W{0,3}([A-Z]{2,4}-\d{2,5})\b'
-  transaction_id: '\btxn[_\s-]?(?:id)?\W{0,3}([A-Za-z0-9]{10,24})\b'
-
-# ---------------------------------------------------------------------------
-# SQL templates: the safe, parameterised path. Every one of these is a question
-# a support engineer actually asks. Add a template every time the agent writes
-# the same ad-hoc query twice.
-# ---------------------------------------------------------------------------
-sql_templates:
-  order_by_id:
-    description: 'Full order record plus its sync audit trail.'
-    parameters:
-      order_id: 'external order identifier'
-    sql: |
-      SELECT o.order_id, o.store_id, o.status, o.total_cents, o.created_at,
-             o.updated_at, a.attempt_no, a.result, a.error_code, a.attempted_at
-      FROM main.orders.orders o
-      LEFT JOIN main.orders.sync_audit a ON a.order_id = o.order_id
-      WHERE o.order_id = :order_id
-      ORDER BY a.attempted_at DESC
-
-  orders_stuck_in_status:
-    description: 'Blast radius: how many orders share a bad status in a window.'
-    parameters:
-      status: 'order status to count'
-      since: 'ISO timestamp lower bound'
-    sql: |
-      SELECT o.store_id, count(*) AS order_count,
-             min(o.created_at) AS first_seen, max(o.created_at) AS last_seen
-      FROM main.orders.orders o
-      WHERE o.status = :status AND o.created_at >= :since
-      GROUP BY o.store_id
-      ORDER BY order_count DESC
-
-  loyalty_txn_for_order:
-    description: "Does a loyalty transaction exist for this order? Catches the
-      classic 'order synced but points never awarded' class of bug."
-    parameters:
-      order_id: 'external order identifier'
-    sql: |
-      SELECT t.txn_id, t.member_id, t.points_delta, t.source_order_id,
-             t.created_at, t.status
-      FROM main.loyalty.transactions t
-      WHERE t.source_order_id = :order_id
-
-  orphaned_syncs:
-    description: 'Orders marked synced with no matching loyalty transaction.'
-    parameters:
-      since: 'ISO timestamp lower bound'
-    sql: |
-      SELECT count(*) AS orphaned, min(o.created_at) AS first_seen
-      FROM main.orders.orders o
-      LEFT JOIN main.loyalty.transactions t ON t.source_order_id = o.order_id
-      WHERE o.status = 'synced' AND t.txn_id IS NULL AND o.created_at >= :since
-
-# ---------------------------------------------------------------------------
-# NRQL templates for reference / reuse in nr_query.
-# ---------------------------------------------------------------------------
-nrql_templates:
-  errors_by_class: |
-    SELECT count(*) FROM TransactionError
-    WHERE appName = '{service}' FACET error.class, error.message
-  log_for_entity: |
-    SELECT timestamp, level, message, trace.id, service.name FROM Log
-    WHERE message LIKE '%{entity}%' ORDER BY timestamp
-  latency_shift: |
-    SELECT percentile(duration, 50, 95, 99) FROM Transaction
-    WHERE appName = '{service}' TIMESERIES 5 minutes
-
-# ---------------------------------------------------------------------------
-# Free-text notes injected into the prompt. Put the tribal knowledge here: the
-# known-flaky dependency, the misleading log line, the retry that hides errors.
-# This is the single highest-leverage field in the file.
-# ---------------------------------------------------------------------------
-triage_notes: |
-  - `pos-gateway` retries 3x with backoff and only logs at WARN on the first two
-    attempts. A ticket describing "intermittent failure" is often a third-attempt
-    failure; always widen the window to at least 5 minutes around the timestamp.
-  - `orders.status = 'synced'` means "we sent it", NOT "loyalty accepted it".
-    Confirm with `loyalty_txn_for_order` before concluding the sync worked.
-  - Store IDs under 1000 are test stores. Tickets referencing them are almost
-    never production incidents.
-  - Timestamps in POS logs are terminal-local, not UTC. Cross-check `store_id`
-    against the store timezone before correlating with New Relic.
+      - punchh_prod.campaign_service.campaigns
+      - punchh_prod.campaign_service.campaign_statistics
+      - punchh_prod.campaign_service.campaign_sets
+      - punchh_prod.campaign_service.campaign_caches
+      - punchh_prod.campaign_service.mass_giftings
+      - punchh_prod.campaign_service.businesses
+      - punchh_prod.punchh.businesses
+      - punchh_prod.punchh.business_admins
+      - punchh_prod.segments.segment_definitions
+      - punchh_prod.segments.complex_segment_parts
+      - punchh_prod.segments.blast_sends

@@ -1,4 +1,4 @@
-"""CLI: `triage EPS-1234`
+"""CLI: `triage SQ-2147`
 
 Start here. Run it against 20-30 already-resolved tickets and compare the
 agent's verdict to the real root cause before you let it post anything.
@@ -17,7 +17,7 @@ from .config import Settings
 
 def main() -> int:
     p = argparse.ArgumentParser(prog="triage", description="Agentic ticket triage")
-    p.add_argument("ticket", help="Jira issue key, e.g. EPS-1234")
+    p.add_argument("ticket", help="Jira issue key, e.g. SQ-2147")
     p.add_argument("--playbook", help="Path to a playbook YAML")
     p.add_argument(
         "--post",

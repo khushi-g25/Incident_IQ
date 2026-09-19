@@ -1,8 +1,8 @@
-# EPS Triage Agent
+# EPS/SQ Triage Agent
 
 Ticket in, evidence-backed root cause out.
 
-Reads a Jira EPS ticket, then correlates three sources to explain it:
+Reads a Jira EPS/SQ ticket, then correlates three sources to explain it:
 
 | Source           | Answers                                                     | Access                                         |
 | ---------------- | ----------------------------------------------------------- | ---------------------------------------------- |
