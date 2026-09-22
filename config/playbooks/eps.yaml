@@ -7,6 +7,7 @@ name: eps-production
 services:
   campaign-service:
     repo_path: /Users/Khushi.Gupta/workspace/segment_flow/campaign-service
+    github_repo: punchh/campaign-service
     nr_app_name: Campaign Workers
     aliases: [campaign service, campaigns, cs, campaign-worker, campaign workers]
     owner: "#eps-campaigns"
@@ -25,6 +26,7 @@ services:
 
   segments-service:
     repo_path: /Users/Khushi.Gupta/workspace/segment_flow/segments-service
+    github_repo: punchh/segments-service
     nr_app_name: segments_loadtest
     aliases: [segments, segment service, segmentation, segment-definition]
     owner: "#eps-segments"
@@ -34,6 +36,7 @@ services:
 
   punchh-server:
     repo_path: /Users/Khushi.Gupta/workspace/segment_flow/punchh-server
+    github_repo: punchh/punchh-server
     nr_app_name: Punchh
     aliases: [punchh, monolith, core, punchh server, ps]
     owner: "#eps-core"
@@ -43,6 +46,8 @@ services:
 
   csp-foundation:
     repo_path: /Users/Khushi.Gupta/workspace/segment_flow/csp-foundation
+    # github_repo omitted: current GITHUB_TOKEN gets 404 on punchh/csp-foundation
+    # (repo not selected for the token, name mismatch, or needs its own SSO grant).
     nr_app_name: csp-foundation
     aliases: [csp, foundation, graphql gateway]
     owner: "#eps-platform"
@@ -50,9 +55,15 @@ services:
 
   punchh-ui-monorepo-vue3:
     repo_path: /Users/Khushi.Gupta/workspace/segment_flow/punchh-ui-monorepo-vue3
+    github_repo: punchh/punchh-ui-monorepo-vue3
     nr_app_name: Punchh UI
     aliases: [ui, admin ui, dashboard, frontend, vue app]
     owner: "#eps-frontend"
+
+# script-tasks and notification-service are confirmed-accessible GitHub repos
+# (punchh/script-tasks, punchh/notification-service) with no corresponding
+# service entry yet — add one above (repo_path/nr_app_name as needed) once
+# there's a ticket-visible name for them to map from.
 
 naming_conventions:
   repos: kebab-case (campaign-service, segments-service, csp-foundation)

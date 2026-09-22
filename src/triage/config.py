@@ -53,15 +53,17 @@ class NewRelicConfig:
     max_rows: int = 200
 
 
-# @dataclass(frozen=True)
-# class DatabricksConfig:
-#     host: str              # https://dbc-xxxx.cloud.databricks.com
-#     token: str             # PAT or OAuth access token for a READ-ONLY service principal
-#     warehouse_id: str
-#     catalog: str | None = None
-#     schema: str | None = None
-#     row_limit: int = 200
-#     timeout_s: int = 120
+# Kept importable (clients/databricks.py + tests reference it directly) even
+# though Settings.databricks and the db_* tools are disabled below.
+@dataclass(frozen=True)
+class DatabricksConfig:
+    host: str              # https://dbc-xxxx.cloud.databricks.com
+    token: str             # PAT or OAuth access token for a READ-ONLY service principal
+    warehouse_id: str
+    catalog: str | None = None
+    schema: str | None = None
+    row_limit: int = 200
+    timeout_s: int = 120
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,13 @@ class AgentConfig:
         return env
 
 
+@dataclass(frozen=True)
+class GithubConfig:
+    token: str             # fine-grained PAT: Contents:Read + Pull requests:Read
+    api_url: str = "https://api.github.com"
+    graphql_url: str = "https://api.github.com/graphql"
+
+
 @dataclass
 class Playbook:
     """Domain knowledge that makes the agent useful on *your* tickets."""
@@ -132,6 +141,7 @@ class Settings:
     # databricks: DatabricksConfig
     agent: AgentConfig
     playbook: Playbook
+    github: GithubConfig | None = None   # optional: enables gh_* tools, no local clone needed
     dry_run: bool = True          # never writes to Jira unless explicitly disabled
     run_dir: Path = REPO_ROOT / ".runs"
 
@@ -176,5 +186,18 @@ class Settings:
                 aws_profile=os.environ.get("AWS_PROFILE"),
             ),
             playbook=Playbook.load(pb),
+            github=_github_from_env(),
             dry_run=os.environ.get("TRIAGE_DRY_RUN", "1") != "0",
         )
+
+
+def _github_from_env() -> GithubConfig | None:
+    """GitHub is optional: only wired up if a token is present."""
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        return None
+    return GithubConfig(
+        token=token,
+        api_url=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+        graphql_url=os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql"),
+    )

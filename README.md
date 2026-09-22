@@ -4,11 +4,11 @@ Ticket in, evidence-backed root cause out.
 
 Reads a Jira EPS/SQ ticket, then correlates three sources to explain it:
 
-| Source | Answers | Access |
-|---|---|---|
-| New Relic (NRQL) | **What** broke — exception class, log line, trace waterfall | NerdGraph GraphQL, read-only |
-| Databricks SQL | **Who and how many** — the records, and the blast radius | Statement Execution API, SELECT-only |
-| Source code | **Why** — the branch that was taken | Agent SDK `Read`/`Grep`/`Glob` on local clones |
+| Source           | Answers                                                     | Access                                         |
+| ---------------- | ----------------------------------------------------------- | ---------------------------------------------- |
+| New Relic (NRQL) | **What** broke — exception class, log line, trace waterfall | NerdGraph GraphQL, read-only                   |
+| Databricks SQL   | **Who and how many** — the records, and the blast radius    | Statement Execution API, SELECT-only           |
+| Source code      | **Why** — the branch that was taken                         | Agent SDK `Read`/`Grep`/`Glob` on local clones |
 
 It never mutates anything. The output is a structured report posted as a Jira
 comment for a human to accept, correct, or reject.
@@ -41,7 +41,9 @@ Jira webhook / CLI
 │   ├ nr_query                    ├ Read                  │
 │   ├ nr_trace                    └ Glob                  │
 │   ├ db_catalog / db_template / db_query                 │
-│   └ jira_related_tickets                                │
+│   ├ jira_related_tickets                                │
+│   └ gh_file / gh_file_history / gh_blame /               │
+│     gh_pr_for_commit / gh_search_code (optional)        │
 │                                                         │
 │   guardrails.py PreToolUse hook denies every write,     │
 │   path escape, and over-budget call                     │
@@ -79,6 +81,7 @@ src/triage/
     jira.py          read via API v2, comment via API v3 (ADF)
     newrelic.py      NerdGraph NRQL + query validation
     databricks.py    Statement Execution API + SQL validation
+    github.py        REST (file/commits/PRs/search) + GraphQL blame, optional
 config/playbooks/
   eps.yaml           ← your domain knowledge lives here
 prompts/system.md    the triage method
@@ -117,7 +120,7 @@ The things that will cost you an afternoon each if you don't know them.
   unbounded windows are slow and expensive. `validate()` injects a window and
   a `LIMIT` if the model forgets.
 - The join key across all of this is `trace.id`. Once the agent has one,
-  `nr_trace` pulls the span waterfall *and* the correlated log lines, which is
+  `nr_trace` pulls the span waterfall _and_ the correlated log lines, which is
   what turns "it failed" into "this dependency call timed out at this ms".
 
 ### Databricks
@@ -144,8 +147,88 @@ The things that will cost you an afternoon each if you don't know them.
 - The fastest route from log line to source line is grepping for the **literal
   log message string**, not the exception class. The system prompt says so.
 - `git log -L` on the identified line is the highest-value follow-up, but Bash
-  is denied by the guardrail. If you want it, add a narrow `git_blame` tool
-  rather than opening up Bash.
+  is denied by the guardrail. `clients/github.py` + the `gh_*` tools below are
+  that narrow, read-only escape hatch.
+
+### GitHub (optional — code access without a local clone)
+
+- Set `GITHUB_TOKEN` (a fine-grained PAT with **Contents: Read-only** and
+  **Pull requests: Read-only** on the repos in scope) and add a `github_repo:
+owner/repo` key to each service in the playbook. Unset means the `gh_*`
+  tools simply aren't registered — `Read`/`Grep`/`Glob` on local clones keep
+  working exactly as before.
+
+#### Getting a token, step by step
+
+1. Log in to **github.com** as an account that has (or can request) access to
+   the repos you want the agent to read.
+2. Click your profile picture, top-right → **Settings**.
+3. Scroll to the very bottom of the left-hand sidebar → **Developer settings**.
+4. In the left sidebar → **Personal access tokens** → **Fine-grained tokens**.
+5. Click **Generate new token** (top-right).
+6. Fill in the form:
+   - **Token name** — something identifiable, e.g. `triage-agent-eps`.
+   - **Expiration** — pick a real date (max 1 year); you'll need to rotate it
+     when it lapses.
+   - **Resource owner** — the user or organisation that owns the repos (if it's
+     an org, the org must allow fine-grained tokens under
+     _Org Settings → Personal access tokens_).
+   - **Repository access** → **Only select repositories** → pick every repo
+     listed as a `github_repo:` value in `config/playbooks/eps.yaml`.
+7. Under **Permissions → Repository permissions**, set:
+   - **Contents** → `Read-only`
+   - **Pull requests** → `Read-only`
+   - (Metadata: Read-only is added automatically — leave it.)
+     Leave every other permission at **No access**.
+8. Click **Generate token**.
+9. **Copy the token immediately** — it's shown once, in a box starting with
+   `github_pat_`. If you navigate away before copying it, you must generate a
+   new one.
+10. If the resource owner is an organisation with approval required, the token
+    stays **Pending** until an org admin approves it under
+    _Org Settings → Personal access tokens → Pending requests_. It won't
+    authenticate until then.
+11. Paste the copied value into your `.env` file (create it from
+    `.env.example` if you haven't already):
+    ```
+    GITHUB_TOKEN=github_pat_xxxxxxxxxxxxxxxxxxxxxxxx
+    ```
+12. Save `.env`. Never commit it — it's already listed in `.gitignore`.
+13. Restart the CLI/webhook process so it picks up the new env var. Verify
+    quickly with:
+    ```bash
+    curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
+         -H "Accept: application/vnd.github+json" \
+         https://api.github.com/repos/<owner>/<repo>
+    ```
+    A `200` with repo JSON means the token and permissions are wired up
+    correctly; a `404`/`403` means either the repo wasn't selected in step 6,
+    the permission in step 7 is missing, or the token is still pending
+    approval (step 10).
+
+- `clients/github.py` has **no write methods at all** — that's the actual
+  security boundary, same as the SELECT-only Databricks principal.
+- Auth is `Authorization: Bearer <token>` plus `X-GitHub-Api-Version`, not
+  Basic auth like Jira.
+- Every read pins to the repo's **default branch**, resolved once via
+  `GET /repos/{owner}/{repo}` and cached — there's no `ref`/`tag`/`sha`
+  parameter for a tool call to wander off with.
+- Five tools, matched to `nr_query`/`nr_find_errors` narrow-beats-wide
+  philosophy:
+  - `gh_file` — read a file from the default branch without cloning.
+  - `gh_file_history` — commits touching a file on the default branch, i.e.
+    `git log -L` without a clone.
+  - `gh_blame` — **line-level** blame on the default branch. This is GraphQL,
+    not REST — GitHub's REST API has no blame endpoint at all.
+  - `gh_pr_for_commit` — the PR (and its review discussion) a commit landed
+    through; often has the _why_ a commit message doesn't.
+  - `gh_search_code` — find where a log string or config key is defined when
+    you don't know the file.
+- If you already clone repos locally for `Read`/`Grep`/`Glob`, you mostly want
+  this for `gh_blame` and `gh_pr_for_commit` — the two things a local clone
+  either can't do well (blame needs `git blame`, slower and noisier to parse
+  from Bash) or can't do at all (a commit doesn't know which PR it shipped in
+  without hitting GitHub's API anyway).
 
 ### A shortcut worth knowing
 
@@ -192,7 +275,7 @@ uvicorn service.webhook:app --port 8080
 ## The playbook is the product
 
 `config/playbooks/eps.yaml` is where the leverage is. The Python is generic; the
-playbook is what makes the agent good at *your* tickets. Four sections:
+playbook is what makes the agent good at _your_ tickets. Four sections:
 
 - **`services`** — ticket vocabulary → repo path + New Relic app name. `aliases`
   catches what humans actually type ("the register", "ordersvc").
@@ -238,6 +321,6 @@ Things to keep true as you widen:
 - Budgets are enforced in three places (`max_turns`, `max_budget_usd`, the
   hook's tool-call cap) because a confused agent loops, and Databricks queries
   are not free.
-- `narrowed_not_confirmed` with three solid facts is a *good* outcome. Tune the
+- `narrowed_not_confirmed` with three solid facts is a _good_ outcome. Tune the
   prompt toward honest partial answers; the failure mode you actually fear is a
   confident wrong root cause that sends an engineer down the wrong path at 2am.

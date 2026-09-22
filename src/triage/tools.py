@@ -24,6 +24,7 @@ from typing import Any
 from claude_agent_sdk import ToolAnnotations, create_sdk_mcp_server, tool
 
 # from .clients.databricks import DatabricksClient, SqlRejected
+from .clients.github import GithubClient, GithubRequestError
 from .clients.jira import JiraClient
 from .clients.newrelic import NewRelicClient, NrqlRejected
 from .config import Settings
@@ -53,7 +54,16 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
     nr = NewRelicClient(settings.newrelic)
     # db = DatabricksClient(settings.databricks)
     jira = JiraClient(settings.jira)
+    gh = GithubClient(settings.github) if settings.github else None
     pb = settings.playbook
+
+    def _github_repo(service: str) -> str:
+        repo = (pb.services.get(service) or {}).get("github_repo")
+        if not repo:
+            raise ValueError(
+                f"No github_repo configured for service {service!r} in the playbook."
+            )
+        return repo
 
     # ---------------------------------------------------------------- New Relic
 
@@ -222,6 +232,128 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
     #     )
     #     return _text(redactor.scrub(res.as_markdown()))
 
+    # ---------------------------------------------------------------------- GitHub
+    # Only registered when GITHUB_TOKEN is configured. Lets the agent read code,
+    # history and PR context straight from GitHub — no local clone required.
+
+    if gh is not None:
+
+        @tool(
+            "gh_file",
+            "Read a file straight from GitHub, no local clone needed. Always reads "
+            "the service's default branch (main/master/whatever it resolves to).",
+            {"service": str, "path": str},
+            annotations=_READ_ONLY,
+        )
+        async def gh_file(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                repo = _github_repo(args["service"])
+                f = gh.get_file(repo, args["path"])
+            except (ValueError, GithubRequestError) as e:
+                trace.add("gh_file", args, error=str(e))
+                return _text(str(e), is_error=True)
+            trace.add(
+                "gh_file", args,
+                result_summary=f"{len(f.content)} chars ({f.ref})", evidence_link=f.html_url,
+            )
+            return _text(redactor.scrub(f.content))
+
+        @tool(
+            "gh_file_history",
+            "List the commits that touched a file, most recent first — the fastest "
+            "way to see what changed and when, equivalent to `git log -L` without a "
+            "local clone.",
+            {"service": str, "path": str, "limit": str},
+            annotations=_READ_ONLY,
+        )
+        async def gh_file_history(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                repo = _github_repo(args["service"])
+                commits = gh.commits_for_path(
+                    repo, args["path"], limit=int(args.get("limit") or 20)
+                )
+            except (ValueError, GithubRequestError) as e:
+                trace.add("gh_file_history", args, error=str(e))
+                return _text(str(e), is_error=True)
+            trace.add("gh_file_history", args, result_summary=f"{len(commits)} commits")
+            if not commits:
+                return _text("No commits found for that path.")
+            lines = [
+                f"{c.date}  {c.sha[:8]}  {c.author}: {redactor.scrub(c.message)}  ({c.url})"
+                for c in commits
+            ]
+            return _text("\n".join(lines))
+
+        @tool(
+            "gh_blame",
+            "Line-level blame on the default branch: which commit last touched each "
+            "range of lines in a file. The single highest-value follow-up once "
+            "you've found the suspect line in a log or stack trace.",
+            {"service": str, "path": str},
+            annotations=_READ_ONLY,
+        )
+        async def gh_blame(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                repo = _github_repo(args["service"])
+                ranges = gh.blame(repo, args["path"])
+            except (ValueError, GithubRequestError) as e:
+                trace.add("gh_blame", args, error=str(e))
+                return _text(str(e), is_error=True)
+            trace.add("gh_blame", args, result_summary=f"{len(ranges)} ranges")
+            if not ranges:
+                return _text("No blame data returned for that path/ref.")
+            lines = [
+                f"L{r['startingLine']}-{r['endingLine']}  {r['commit']['oid'][:8]}  "
+                f"{r['commit']['author']}  {r['commit']['committedDate']}: "
+                f"{redactor.scrub(r['commit']['message'])}"
+                for r in ranges
+            ]
+            return _text("\n".join(lines))
+
+        @tool(
+            "gh_pr_for_commit",
+            "Find the pull request(s) a commit landed through — surfaces review "
+            "discussion and intent that the bare commit message doesn't carry.",
+            {"service": str, "sha": str},
+            annotations=_READ_ONLY,
+        )
+        async def gh_pr_for_commit(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                repo = _github_repo(args["service"])
+                prs = gh.pulls_for_commit(repo, args["sha"])
+            except (ValueError, GithubRequestError) as e:
+                trace.add("gh_pr_for_commit", args, error=str(e))
+                return _text(str(e), is_error=True)
+            trace.add("gh_pr_for_commit", args, result_summary=f"{len(prs)} PRs")
+            if not prs:
+                return _text("No pull request found for that commit.")
+            out = [
+                f"#{p['number']} {p['title']} ({p['html_url']})\n"
+                + redactor.scrub((p.get('body') or '')[:800])
+                for p in prs
+            ]
+            return _text("\n\n".join(out))
+
+        @tool(
+            "gh_search_code",
+            "Search code in a service's repo by keyword — good for finding where a "
+            "log message string or config key is defined when you don't know the "
+            "file.",
+            {"service": str, "query": str},
+            annotations=_READ_ONLY,
+        )
+        async def gh_search_code(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                repo = _github_repo(args["service"])
+                items = gh.search_code(repo, args["query"])
+            except (ValueError, GithubRequestError) as e:
+                trace.add("gh_search_code", args, error=str(e))
+                return _text(str(e), is_error=True)
+            trace.add("gh_search_code", args, result_summary=f"{len(items)} matches")
+            if not items:
+                return _text("No matches.")
+            return _text("\n".join(f"{i['path']} ({i['html_url']})" for i in items))
+
     # ---------------------------------------------------------------------- Jira
 
     @tool(
@@ -254,20 +386,15 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
             )
         return _text("\n\n".join(out))
 
-    server = create_sdk_mcp_server(
-        name="triage",
-        version="1.0.0",
-        tools=[
-            nr_query,
-            nr_find_errors,
-            nr_trace,
-            # db_catalog,
-            # db_template,
-            # db_query,
-            jira_related_tickets,
-        ],
-    )
-
+    tools = [
+        nr_query,
+        nr_find_errors,
+        nr_trace,
+        # db_catalog,
+        # db_template,
+        # db_query,
+        jira_related_tickets,
+    ]
     names = [
         "mcp__triage__nr_query",
         "mcp__triage__nr_find_errors",
@@ -276,9 +403,23 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
         # "mcp__triage__db_template",
         # "mcp__triage__db_query",
         "mcp__triage__jira_related_tickets",
-        # Built-ins for the code-reading leg.
-        "Read",
-        "Grep",
-        "Glob",
     ]
+
+    if gh is not None:
+        tools += [gh_file, gh_file_history, gh_blame, gh_pr_for_commit, gh_search_code]
+        names += [
+            "mcp__triage__gh_file",
+            "mcp__triage__gh_file_history",
+            "mcp__triage__gh_blame",
+            "mcp__triage__gh_pr_for_commit",
+            "mcp__triage__gh_search_code",
+        ]
+
+    # Read/Grep/Glob only make sense against an actual local clone (cwd/add_dirs
+    # come from repo_path). No repo_path configured -> omit them so the model
+    # isn't offered built-ins with nothing to point at; it falls back to gh_*.
+    if pb.repo_paths():
+        names += ["Read", "Grep", "Glob"]
+
+    server = create_sdk_mcp_server(name="triage", version="1.0.0", tools=tools)
     return server, names
