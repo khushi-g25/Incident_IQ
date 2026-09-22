@@ -73,7 +73,7 @@ naming_conventions:
   workers: CamelCase ending in Worker (AnniversaryCampaignWorker)
 
 entity_patterns:
-  jira_key: '\bEPS-\d{3,6}\b'                                   # EPS-11989
+  jira_key: '\b(?:EPS|SQ)-\d{3,6}\b'          # EPS-11989, SQ-2142 (both land here)
   campaign_id: '(?i)\bcampaign[ _]?(?:id)?\s*[:#=]?\s*(\d{4,12})\b'   # campaign 449174183
   mass_gifting_id: '(?i)\bmass[ _]?gift(?:ing)?[ _]?(?:id)?\s*[:#=]?\s*(\d{4,12})\b'
   business_id: '(?i)\bbusiness[ _]?(?:id)?\s*[:#=]?\s*(\d{1,9})\b'
@@ -281,6 +281,10 @@ playbooks:
       - "sql_templates.campaigns_active_for_business_window to confirm which campaign config caused the fan-out (check trigger_event, execution_delay, is_blast, segment_definition_id)."
 
 triage_notes: |
+  - Confirm the appName with nr_apps before filtering on it. The services block
+    below lists the app names we know about, but it is not exhaustive: 'Pos
+    Service' and other app names appear in real tickets without a service entry
+    here. A guessed appName returns zero rows that look exactly like "no errors".
   - NR app name != repo name. campaign-service reports under four different
     appName values (Campaign Workers, Bulk Campaign Workers, Bulk Campaign
     Workers Fair, Trigger Campaign Workers) because app_name is injected via

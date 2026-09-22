@@ -13,6 +13,10 @@ Reads a Jira EPS/SQ ticket, then correlates three sources to explain it:
 It never mutates anything. The output is a structured report posted as a Jira
 comment for a human to accept, correct, or reject.
 
+> **Just want to run it?** See **[RUNNING.md](RUNNING.md)** — setup, commands,
+> reading the output, and troubleshooting. This README covers the design
+> reasoning behind it.
+
 ---
 
 ## Architecture
@@ -37,10 +41,13 @@ Jira webhook / CLI
 │ 3. AGENT LOOP  (Claude Agent SDK)                       │
 │                                                         │
 │   tools.py (in-process MCP)     built-ins               │
-│   ├ nr_find_errors              ├ Grep                  │
-│   ├ nr_query                    ├ Read                  │
-│   ├ nr_trace                    └ Glob                  │
-│   ├ db_catalog / db_template / db_query                 │
+│   ├ nr_apps / nr_event_types    ├ Grep                  │
+│   │   / nr_attributes  (discover├ Read                  │
+│   │   before you filter)        └ Glob                  │
+│   ├ nr_find_errors               (only when a repo is   │
+│   ├ nr_query                      cloned locally)       │
+│   ├ nr_trace                                            │
+│   ├ db_catalog / db_template / db_query  (disabled)     │
 │   ├ jira_related_tickets                                │
 │   └ gh_file / gh_file_history / gh_blame /               │
 │     gh_pr_for_commit / gh_search_code (optional)        │
@@ -117,11 +124,25 @@ The things that will cost you an afternoon each if you don't know them.
 - The NRQL string is passed as a GraphQL variable of the custom scalar type
   `Nrql!`. Don't string-build the GraphQL document.
 - Always bound with `SINCE`. A single result set caps at 5000 rows, and
-  unbounded windows are slow and expensive. `validate()` injects a window and
+  unbounded windows are slow and expensive. `prepare()` injects a window and
   a `LIMIT` if the model forgets.
 - The join key across all of this is `trace.id`. Once the agent has one,
   `nr_trace` pulls the span waterfall _and_ the correlated log lines, which is
   what turns "it failed" into "this dependency call timed out at this ms".
+- **Discover before you filter.** `appName` is the single biggest source of
+  false negatives: repo name, service name and NR app name are all different,
+  and a guessed `appName` returns zero rows that are indistinguishable from
+  "nothing is broken". `nr_apps`, `nr_event_types` and `nr_attributes` exist so
+  the agent reads the real names out of the account instead of inventing them,
+  and `_run_nrql` appends an explicit warning to every empty result set.
+- **NRQL is not SQL.** `SELECT count(*), error.class FROM TransactionError`
+  fails with "Value must be constant in its context" — an aggregate and a bare
+  attribute cannot coexist in a SELECT. Models make this mistake constantly, so
+  `prepare()` repairs it by moving the attribute into `FACET` (before the
+  window/limit clauses, where it must go) and tells the agent what it changed.
+- The mutation guard matches keywords against a **literal-stripped** copy of the
+  query. Matching them raw rejected any query touching an endpoint named
+  `.../create` or `.../update`, which is most of a latency investigation.
 
 ### Databricks
 
@@ -270,6 +291,24 @@ uvicorn service.webhook:app --port 8080
 # fires on issue_created + issue_updated, scoped by JQL to project = EPS
 ```
 
+Local approve UI — paste a ticket, get a plain-English summary, post to Jira
+only if you click Approve:
+
+```bash
+uvicorn service.ui:app --port 8090 --reload
+# open http://127.0.0.1:8090
+```
+
+Keep `--reload` on while you are tuning. `prompts/system.md`, `REPORT_SCHEMA`
+and the tool definitions are all read at import time, so a server started
+before an edit keeps generating reports in the old shape — which looks exactly
+like the prompt change having no effect.
+
+`service/ui.py` always runs `triage(..., post=False)` regardless of
+`TRIAGE_DRY_RUN` — the agent never posts on its own here. `POST /api/approve`
+is the only thing that calls `JiraClient.add_comment`, and it does so
+unconditionally once you click it, so treat Approve as final.
+
 ---
 
 ## The playbook is the product
@@ -324,3 +363,14 @@ Things to keep true as you widen:
 - `narrowed_not_confirmed` with three solid facts is a _good_ outcome. Tune the
   prompt toward honest partial answers; the failure mode you actually fear is a
   confident wrong root cause that sends an engineer down the wrong path at 2am.
+- Confidence is not taken on trust. The model declares which of the three
+  signals (logs / code / data) it actually confirmed in `signals_confirmed`,
+  and `validate_report()` caps the stated confidence against that and against
+  the run's real hit rate — a run where every query came back empty cannot
+  publish a high-confidence cause. Downgrades are printed in the comment, not
+  applied silently, so the reader sees why.
+- The comment is read by two audiences. `plain_language` is rendered first, in
+  business terms with no file paths or class names, for the support lead or PM
+  deciding whether to escalate; `Technical detail` follows for the engineer.
+  Verdict and confidence enums are translated to prose on the way out —
+  nobody outside the team should have to decode `narrowed_not_confirmed`.

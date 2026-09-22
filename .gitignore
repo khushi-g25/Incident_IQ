@@ -4,3 +4,9 @@ venv/
 .venv/
 __pycache__/
 *.pyc
+
+# Per-run traces. Regenerated on every run, and they contain real ticket
+# content, internal file paths and New Relic permalinks carrying the account id.
+.runs/
+
+.pytest_cache/

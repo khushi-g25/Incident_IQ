@@ -19,6 +19,7 @@ ranges and context. We just point `cwd`/`add_dirs` at the repos.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from claude_agent_sdk import ToolAnnotations, create_sdk_mcp_server, tool
@@ -36,6 +37,16 @@ MAX_CHARS = 20_000
 _READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 
 
+def _esc(value: str) -> str:
+    """Escape a value being interpolated into an NRQL string literal.
+
+    Values reaching these tools come from a model reading a ticket, so an
+    unescaped apostrophe is a routine occurrence, not an attack -- but it
+    breaks the query either way.
+    """
+    return str(value).replace("\\", "\\\\").replace("'", "\\'")
+
+
 def _text(payload: str, is_error: bool = False) -> dict[str, Any]:
     body = payload if len(payload) <= MAX_CHARS else (
         payload[:MAX_CHARS] + f"\n\n... [truncated at {MAX_CHARS} chars — "
@@ -48,14 +59,27 @@ def _text(payload: str, is_error: bool = False) -> dict[str, Any]:
     return out
 
 
-def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
-    """Returns (mcp_server_config, allowed_tool_names)."""
+def build_tools(
+    settings: Settings,
+    redactor: Redactor,
+    trace: RunTrace,
+    default_window: str | None = None,
+):
+    """Returns (mcp_server_config, allowed_tool_names).
+
+    `default_window` is the SINCE/UNTIL clause derived from the ticket. The
+    discovery tools fall back to it so that "what app names exist?" is answered
+    for the incident window rather than an arbitrary last-24-hours.
+    """
 
     nr = NewRelicClient(settings.newrelic)
     # db = DatabricksClient(settings.databricks)
     jira = JiraClient(settings.jira)
     gh = GithubClient(settings.github) if settings.github else None
     pb = settings.playbook
+
+    def pb_window() -> str:
+        return default_window or settings.newrelic.default_window
 
     def _github_repo(service: str) -> str:
         repo = (pb.services.get(service) or {}).get("github_repo")
@@ -66,51 +90,142 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
         return repo
 
     # ---------------------------------------------------------------- New Relic
+    #
+    # `_run_nrql` is a plain function, deliberately. The @tool decorator returns
+    # an SdkMcpTool dataclass, not a callable, so composite tools calling each
+    # other through the decorated name raise TypeError at runtime -- which is
+    # what silently disabled nr_find_errors and nr_trace on every run.
+
+    async def _run_nrql(nrql: str, purpose: str) -> dict[str, Any]:
+        try:
+            res = nr.nrql(nrql)
+        except (NrqlRejected, RuntimeError) as e:
+            trace.add("nr_query", {"nrql": nrql, "purpose": purpose}, error=str(e))
+            return _text(f"Query rejected or failed: {e}", is_error=True)
+
+        body = redactor.scrub(json.dumps(res.results, indent=2, default=str))
+        trace.add(
+            "nr_query",
+            {"nrql": res.query, "purpose": purpose},
+            result_summary=f"{len(res.results)} rows",
+            evidence_link=res.permalink,
+        )
+        footer = [f"\n\nNRQL run: {res.query}", f"Permalink: {res.permalink}"]
+        if res.notes:
+            footer.append("Adjustments made to your query:")
+            footer += [f"  - {n}" for n in res.notes]
+        if res.messages:
+            footer.append(f"NR messages: {res.messages}")
+        if not res.results:
+            footer.append(
+                "ZERO ROWS. Before concluding 'no errors happened', rule out the "
+                "boring explanations: wrong appName (run nr_apps), wrong event "
+                "type (nr_event_types), wrong attribute name (nr_attributes), or "
+                "a window in the wrong timezone. Absence of data is only evidence "
+                "once you have confirmed you queried the right place."
+            )
+        return _text(body + "\n".join(footer))
 
     @tool(
         "nr_query",
         "Run a read-only NRQL query against New Relic. Use for logs (FROM Log), "
         "errors (FROM TransactionError), and traces (FROM Span). ALWAYS include a "
-        "SINCE clause; a LIMIT is added if you omit one. Start broad (count by "
-        "error class), then drill into individual log lines.",
+        "SINCE clause; a LIMIT is added if you omit one. NRQL cannot return an "
+        "aggregate and a bare attribute in the same SELECT -- put the attribute "
+        "in FACET instead. Start broad (count by error class), then drill in.",
         {"nrql": str, "purpose": str},
         annotations=_READ_ONLY,
     )
     async def nr_query(args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            res = nr.nrql(args["nrql"])
-        except (NrqlRejected, RuntimeError) as e:
-            trace.add("nr_query", args, error=str(e))
-            return _text(f"Query rejected or failed: {e}", is_error=True)
-        body = redactor.scrub(json.dumps(res.results, indent=2, default=str))
-        trace.add(
-            "nr_query",
-            {"nrql": res.query, "purpose": args.get("purpose")},
-            result_summary=f"{len(res.results)} rows",
-            evidence_link=res.permalink,
+        return await _run_nrql(args["nrql"], args.get("purpose") or "")
+
+    @tool(
+        "nr_apps",
+        "List the appName values New Relic has actually seen in a window, with "
+        "event counts. Run this BEFORE filtering on any appName: repo names, "
+        "service names and NR app names differ, and a guessed appName returns "
+        "zero rows that look exactly like 'no errors'. Optional `contains` "
+        "filters the list case-insensitively.",
+        {"window": str, "contains": str},
+        annotations=_READ_ONLY,
+    )
+    async def nr_apps(args: dict[str, Any]) -> dict[str, Any]:
+        window = args.get("window") or pb_window()
+        needle = (args.get("contains") or "").strip()
+        where = f" WHERE appName LIKE '%{_esc(needle)}%'" if needle else ""
+        out = []
+        for event in ("Transaction", "TransactionError", "Log"):
+            res = await _run_nrql(
+                f"SELECT count(*) FROM {event}{where} {window} "
+                "FACET appName LIMIT MAX",
+                purpose=f"discover appName values reporting {event}",
+            )
+            out.append(f"### appName values seen in {event}\n" + res["content"][0]["text"])
+        return _text("\n\n".join(out))
+
+    @tool(
+        "nr_event_types",
+        "List the event types (data tables) that exist in this New Relic account "
+        "for a window. Use it when a query returns zero rows and you need to know "
+        "whether the event type you queried carries any data at all.",
+        {"window": str},
+        annotations=_READ_ONLY,
+    )
+    async def nr_event_types(args: dict[str, Any]) -> dict[str, Any]:
+        return await _run_nrql(
+            f"SHOW EVENT TYPES {args.get('window') or pb_window()}",
+            purpose="discover available event types",
         )
-        notes = f"\n\nNRQL run: {res.query}\nPermalink: {res.permalink}"
-        if res.messages:
-            notes += f"\nNR messages: {res.messages}"
-        return _text(body + notes)
+
+    @tool(
+        "nr_attributes",
+        "List the attribute names available on an event type, optionally scoped "
+        "to one appName. Use before filtering or faceting on an attribute you "
+        "have not already seen in a result -- attribute naming varies per agent "
+        "(error.class vs errorClass, name vs transactionName).",
+        {"event_type": str, "app_name": str, "window": str},
+        annotations=_READ_ONLY,
+    )
+    async def nr_attributes(args: dict[str, Any]) -> dict[str, Any]:
+        app = (args.get("app_name") or "").strip()
+        where = f" WHERE appName = '{_esc(app)}'" if app else ""
+        return await _run_nrql(
+            f"SELECT keyset() FROM {args['event_type']}{where} "
+            f"{args.get('window') or pb_window()}",
+            purpose=f"discover attributes on {args['event_type']}",
+        )
 
     @tool(
         "nr_find_errors",
-        "Pre-built error hunt: groups errors by class and message for a service "
-        "over a window, so you learn the dominant failure mode in one call. "
-        "Prefer this as your FIRST New Relic call.",
+        "Pre-built error hunt: groups errors by class and message for one "
+        "appName over a window, so you learn the dominant failure mode in one "
+        "call. Pass an appName confirmed via nr_apps, not a repo name. Queries "
+        "TransactionError and Log separately, because their attributes differ.",
         {"service": str, "window": str},
         annotations=_READ_ONLY,
     )
     async def nr_find_errors(args: dict[str, Any]) -> dict[str, Any]:
-        q = (
+        app = _esc(args["service"])
+        window = args.get("window") or pb_window()
+        errors = await _run_nrql(
             "SELECT count(*), latest(error.message), latest(trace.id) "
-            "FROM TransactionError, Log "
-            f"WHERE appName = '{args['service']}' OR service.name = '{args['service']}' "
-            "FACET error.class, level "
-            f"{args['window']} LIMIT 50"
+            f"FROM TransactionError WHERE appName = '{app}' {window} "
+            "FACET `error.class`, `transactionName` LIMIT 50",
+            purpose=f"dominant failure mode for {args['service']} (TransactionError)",
         )
-        return await nr_query({"nrql": q, "purpose": "dominant failure mode"})
+        logs = await _run_nrql(
+            "SELECT count(*), latest(message), latest(trace.id) "
+            f"FROM Log WHERE appName = '{app}' AND level IN "
+            f"('ERROR','FATAL','error','fatal') {window} "
+            "FACET `level` LIMIT 50",
+            purpose=f"error-level log volume for {args['service']}",
+        )
+        return _text(
+            "### TransactionError, grouped by class and transaction\n"
+            + errors["content"][0]["text"]
+            + "\n\n### Error-level log lines\n"
+            + logs["content"][0]["text"]
+        )
 
     @tool(
         "nr_trace",
@@ -121,35 +236,25 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
         annotations=_READ_ONLY,
     )
     async def nr_trace(args: dict[str, Any]) -> dict[str, Any]:
-        tid = args["trace_id"]
-        spans = await nr_query(
-            {
-                "nrql": (
-                    "SELECT timestamp, name, service.name, duration.ms, "
-                    "otel.status_code, error.message FROM Span "
-                    f"WHERE trace.id = '{tid}' {args['window']} "
-                    "ORDER BY timestamp LIMIT 200"
-                ),
-                "purpose": f"span waterfall for trace {tid}",
-            }
+        tid = _esc(args["trace_id"])
+        window = args.get("window") or pb_window()
+        spans = await _run_nrql(
+            "SELECT timestamp, name, service.name, duration.ms, "
+            "otel.status_code, error.message FROM Span "
+            f"WHERE trace.id = '{tid}' {window} ORDER BY timestamp LIMIT 200",
+            purpose=f"span waterfall for trace {tid}",
         )
-        logs = await nr_query(
-            {
-                "nrql": (
-                    "SELECT timestamp, level, message, service.name FROM Log "
-                    f"WHERE trace.id = '{tid}' {args['window']} "
-                    "ORDER BY timestamp LIMIT 200"
-                ),
-                "purpose": f"correlated logs for trace {tid}",
-            }
+        logs = await _run_nrql(
+            "SELECT timestamp, level, message, service.name FROM Log "
+            f"WHERE trace.id = '{tid}' {window} ORDER BY timestamp LIMIT 200",
+            purpose=f"correlated logs for trace {tid}",
         )
-        merged = (
+        return _text(
             "### Spans\n"
             + spans["content"][0]["text"]
             + "\n\n### Correlated logs\n"
             + logs["content"][0]["text"]
         )
-        return _text(merged)
 
     # ---------------------------------------------------------------- Databricks
     # (Disabled for now - not using Databricks in current flow)
@@ -364,15 +469,38 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
         annotations=_READ_ONLY,
     )
     async def jira_related_tickets(args: dict[str, Any]) -> dict[str, Any]:
-        terms = args["text"].replace('"', " ")[:200]
-        jql = (
-            f'project = {settings.jira.project_key} AND text ~ "{terms}" '
-            "ORDER BY created DESC"
-        )
-        try:
-            keys = jira.search(jql, limit=10)
-        except Exception as e:  # noqa: BLE001 - surfaced to the model, not raised
-            return _text(f"Jira search failed: {e}", is_error=True)
+        # JQL text search treats most punctuation as reserved, so a raw error
+        # message pasted straight in either errors or silently matches nothing.
+        raw = args["text"][:300]
+        terms = re.sub(r"[^\w\s.-]", " ", raw)
+        words = [w for w in terms.split() if len(w) > 2][:12]
+        if not words:
+            return _text("Nothing searchable in that text.", is_error=True)
+        phrase = " ".join(words)
+
+        attempts = [
+            f'project = {settings.jira.project_key} AND text ~ "{phrase}" '
+            "ORDER BY created DESC",
+            # Narrower fallback: the distinctive words only, summary-scoped.
+            f'project = {settings.jira.project_key} AND summary ~ "'
+            + " ".join(words[:5])
+            + '" ORDER BY created DESC',
+        ]
+        keys: list[str] = []
+        errors: list[str] = []
+        jql = attempts[0]
+        for candidate in attempts:
+            try:
+                keys = jira.search(candidate, limit=10)
+            except Exception as e:  # noqa: BLE001 - surfaced to the model
+                errors.append(f"{candidate[:60]}...: {e}")
+                continue
+            jql = candidate
+            if keys:
+                break
+        if not keys and errors:
+            trace.add("jira_related_tickets", {"jql": jql}, error="; ".join(errors)[:300])
+            return _text("Jira search failed: " + "; ".join(errors), is_error=True)
         trace.add("jira_related_tickets", {"jql": jql}, f"{len(keys)} matches")
         if not keys:
             return _text("No similar tickets found.")
@@ -388,6 +516,9 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
 
     tools = [
         nr_query,
+        nr_apps,
+        nr_event_types,
+        nr_attributes,
         nr_find_errors,
         nr_trace,
         # db_catalog,
@@ -397,6 +528,9 @@ def build_tools(settings: Settings, redactor: Redactor, trace: RunTrace):
     ]
     names = [
         "mcp__triage__nr_query",
+        "mcp__triage__nr_apps",
+        "mcp__triage__nr_event_types",
+        "mcp__triage__nr_attributes",
         "mcp__triage__nr_find_errors",
         "mcp__triage__nr_trace",
         # "mcp__triage__db_catalog",

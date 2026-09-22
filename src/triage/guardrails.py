@@ -25,6 +25,21 @@ MUTATING_TOOLS = {
     "KillShell", "WebFetch",
 }
 
+# The SDK's own report-submission call goes through this same hook. Blocking it
+# once the budget is spent defeats the "write up what you have" instruction —
+# there'd be nowhere left for that write-up to go.
+FINALIZATION_TOOLS = {"StructuredOutput"}
+
+# These record themselves in the trace, with a real result summary and an
+# evidence link, once they return. Logging them here as well double-counted
+# every call: it burned the tool-call budget at twice the intended rate and
+# filled the Jira evidence table with "(pre-flight ok)" rows that cite nothing.
+SELF_TRACING_PREFIX = "mcp__triage__"
+
+# Bookkeeping calls that are not evidence and should not be charged to the
+# investigation budget.
+UNBILLED_TOOLS = {"ToolSearch", "TodoWrite"}
+
 
 def build_hooks(
     trace: RunTrace,
@@ -45,15 +60,24 @@ def build_hooks(
                 "anything. Report the fix as a suggested diff in your findings."
             )
 
-        if len(trace.entries) >= max_tool_calls:
+        billable = [
+            e for e in trace.entries if e.tool not in UNBILLED_TOOLS
+        ]
+        if len(billable) >= max_tool_calls and name not in FINALIZATION_TOOLS:
             return _deny(
                 f"Tool-call budget of {max_tool_calls} reached. Write up what you "
                 "have, and state explicitly what is still unverified."
             )
 
         if name in ("Read", "Grep", "Glob"):
+            if not roots:
+                return _deny(
+                    "No service repository is cloned on this machine, so there is "
+                    "nothing local to read. Use gh_search_code / gh_file to read "
+                    "the service's default branch from GitHub instead."
+                )
             target = args.get("file_path") or args.get("path") or ""
-            if target and roots:
+            if target:
                 try:
                     resolved = Path(target).resolve()
                 except OSError:
@@ -66,7 +90,8 @@ def build_hooks(
                         f"({[str(r) for r in roots]})."
                     )
 
-        trace.add(name, args, result_summary="(pre-flight ok)")
+        if not name.startswith(SELF_TRACING_PREFIX) and name not in UNBILLED_TOOLS:
+            trace.add(name, args, result_summary="(pre-flight ok)")
         return {}
 
     return {"PreToolUse": [HookMatcher(hooks=[pre_tool_use])]}

@@ -70,7 +70,10 @@ class DatabricksConfig:
 class AgentConfig:
     model: str = "sonnet"
     fallback_model: str | None = None
-    max_turns: int = 40
+    # Matched to the 60-call tool budget in guardrails. At 40, every recorded
+    # run ended by exhausting its turns rather than by converging, and the
+    # write-up was whatever it happened to have at the cut-off.
+    max_turns: int = 60
     max_budget_usd: float = 2.00
     effort: str = "high"
     # --- provider auth (Anthropic API by default, Amazon Bedrock if enabled) ---
@@ -131,7 +134,12 @@ class Playbook:
         return cls(**data)
 
     def repo_paths(self) -> list[str]:
-        return [s["repo_path"] for s in self.services.values() if s.get("repo_path")]
+        """Only paths that exist on *this* machine — repo_path is often authored
+        on someone else's box, and gh_* tools cover code reading either way."""
+        return [
+            s["repo_path"] for s in self.services.values()
+            if s.get("repo_path") and Path(s["repo_path"]).is_dir()
+        ]
 
 
 @dataclass(frozen=True)
@@ -174,7 +182,7 @@ class Settings:
             agent=AgentConfig(
                 model=os.environ.get("TRIAGE_MODEL", "sonnet"),
                 fallback_model=os.environ.get("TRIAGE_FALLBACK_MODEL") or None,
-                max_turns=int(os.environ.get("TRIAGE_MAX_TURNS", "40")),
+                max_turns=int(os.environ.get("TRIAGE_MAX_TURNS", "60")),
                 max_budget_usd=float(os.environ.get("TRIAGE_MAX_BUDGET_USD", "2.00")),
                 use_bedrock=_bedrock_enabled(),
                 aws_region=os.environ.get("AWS_REGION")

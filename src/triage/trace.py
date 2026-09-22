@@ -65,15 +65,40 @@ class RunTrace:
     def errors(self) -> list[TraceEntry]:
         return [e for e in self.entries if e.error]
 
+    @property
+    def evidence_entries(self) -> list[TraceEntry]:
+        """Calls that actually produced or failed to produce evidence.
+
+        Pre-flight rows exist to enforce the budget and to record denials; they
+        cite nothing, so publishing them in the ticket just buries the real
+        queries an engineer would want to re-run."""
+        return [
+            e for e in self.entries
+            if e.result_summary != "(pre-flight ok)" or e.error
+        ]
+
+    @property
+    def query_stats(self) -> dict[str, int]:
+        """Signal on how much of the run actually returned data. Used to keep a
+        confident verdict from resting on a pile of empty result sets."""
+        rows = [e for e in self.entries if (e.result_summary or "").endswith("rows")]
+        empty = [e for e in rows if (e.result_summary or "").startswith("0 ")]
+        return {
+            "data_queries": len(rows),
+            "empty_results": len(empty),
+            "errors": len(self.errors),
+        }
+
     def evidence_markdown(self) -> str:
         """Appendix for the Jira comment: what the agent actually looked at."""
-        if not self.entries:
+        entries = self.evidence_entries
+        if not entries:
             return "_No tools were called._"
         lines = ["| # | tool | what | link |", "|---|---|---|---|"]
-        for e in self.entries:
+        for i, e in enumerate(entries, start=1):
             what = e.result_summary or e.error or ""
             link = f"[query]({e.evidence_link})" if e.evidence_link else ""
-            lines.append(f"| {e.seq} | `{e.tool}` | {what} | {link} |")
+            lines.append(f"| {i} | `{e.tool}` | {what} | {link} |")
         return "\n".join(lines)
 
     def save(self, run_dir: Path) -> Path:

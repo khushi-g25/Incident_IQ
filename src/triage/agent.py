@@ -12,6 +12,7 @@ axes: turns, dollars, and tool calls.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import sys
 import time
@@ -32,17 +33,34 @@ from .config import REPO_ROOT, Settings
 from .extract import TicketBrief, extract_brief
 from .guardrails import build_hooks
 from .redact import Redactor
-from .schema import REPORT_SCHEMA, render_markdown
+from .schema import (
+    REPORT_SCHEMA,
+    normalize_report,
+    render_markdown,
+    validate_report,
+)
 from .tools import build_tools
 from .trace import RunTrace
 
 SYSTEM_PROMPT_PATH = REPO_ROOT / "prompts/system.md"
 TEXT_ATTACHMENT_TYPES = ("text/", "application/json", "application/xml")
 
+# Optional per-task sink for progress lines (e.g. a UI streaming them to a
+# browser). Unset by default, so the CLI/webhook paths are unaffected; a
+# caller sets it for the duration of one `triage()` call via `contextvars`,
+# which asyncio.create_task() already isolates per task.
+LOG_SINK: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "LOG_SINK", default=None
+)
+
 
 def _log(msg: str) -> None:
     """Lightweight progress line to stderr, timestamped, flushed immediately."""
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+    line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+    print(line, file=sys.stderr, flush=True)
+    sink = LOG_SINK.get()
+    if sink is not None:
+        sink.append(line)
 
 
 @dataclass
@@ -62,6 +80,7 @@ async def triage(
     ticket_key: str,
     settings: Settings,
     post: bool | None = None,
+    extra_context: str | None = None,
 ) -> TriageOutcome:
     t0 = time.time()
     _log(f"🚀 starting triage for {ticket_key} (model={settings.agent.model})")
@@ -108,7 +127,9 @@ async def triage(
 
     # ---- Phase 3: agent loop ---------------------------------------------
     _log("🛠️  [setup] building tools (New Relic, Jira search) ...")
-    server, allowed = build_tools(settings, redactor, trace)
+    server, allowed = build_tools(
+        settings, redactor, trace, default_window=brief.nrql_window()
+    )
     repo_roots = settings.playbook.repo_paths()
     _log(f"🛠️  [setup] tools ready: {', '.join(a.split('__')[-1] for a in allowed)}")
 
@@ -120,7 +141,13 @@ async def triage(
         mcp_servers={"triage": server},
         strict_mcp_config=True,
         allowed_tools=allowed,
-        disallowed_tools=["Write", "Edit", "MultiEdit", "Bash", "NotebookEdit"],
+        # Offering Read/Grep/Glob with no clone on disk cost real turns: the
+        # playbook's repo_paths are authored on another machine, so the agent
+        # globbed a nonexistent directory before falling back to gh_*.
+        disallowed_tools=[
+            "Write", "Edit", "MultiEdit", "Bash", "NotebookEdit",
+            *([] if repo_roots else ["Read", "Grep", "Glob"]),
+        ],
         hooks=build_hooks(trace, repo_roots),
         permission_mode="dontAsk",
         setting_sources=[],
@@ -135,7 +162,7 @@ async def triage(
         env={"API_TIMEOUT_MS": "180000", **settings.agent.provider_env()},
     )
 
-    prompt = _build_prompt(redactor.scrub(raw_text), brief, settings)
+    prompt = _build_prompt(redactor.scrub(raw_text), brief, settings, extra_context)
 
     report: dict[str, Any] | None = None
     narration: list[str] = []
@@ -178,8 +205,12 @@ async def triage(
             + "\n\n### Queries run\n" + trace.evidence_markdown()
         )
     else:
+        report = normalize_report(report)
+        report, caveats = validate_report(report, trace.query_stats)
+        for c in caveats:
+            _log(f"⚠️  [validate] {c}")
         markdown = redactor.unscrub(
-            render_markdown(report, trace.evidence_markdown(), trace.run_id)
+            render_markdown(report, trace.evidence_markdown(), trace.run_id, caveats)
         )
 
     should_post = (not settings.dry_run) if post is None else post
@@ -239,7 +270,12 @@ def _attachment_text(jira: JiraClient, issue: JiraIssue, cap: int = 3) -> str:
     return "".join(chunks)
 
 
-def _build_prompt(ticket_text: str, brief: TicketBrief, settings: Settings) -> str:
+def _build_prompt(
+    ticket_text: str,
+    brief: TicketBrief,
+    settings: Settings,
+    extra_context: str | None = None,
+) -> str:
     pb = settings.playbook
     svc_lines = [
         f"- {name}: repo at {meta.get('repo_path','?')}, "
@@ -247,12 +283,13 @@ def _build_prompt(ticket_text: str, brief: TicketBrief, settings: Settings) -> s
         for name, meta in pb.services.items()
         if not name.startswith("_")
     ]
+    extra = f"\n## Additional context from the requester\n{extra_context}\n" if extra_context else ""
     return f"""Triage this ticket.
 
 {ticket_text}
 
 {brief.as_prompt_text()}
-
+{extra}
 ## Services in scope
 {chr(10).join(svc_lines)}
 

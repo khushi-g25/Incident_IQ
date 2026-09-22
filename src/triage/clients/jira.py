@@ -8,6 +8,7 @@ Write via API v3 (comments must be ADF).
 from __future__ import annotations
 
 import base64
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -104,12 +105,24 @@ class JiraClient:
         )
 
     def search(self, jql: str, limit: int = 20) -> list[str]:
-        r = self._http.post(
-            "/rest/api/2/search",
-            json={"jql": jql, "maxResults": limit, "fields": ["key"]},
-        )
-        r.raise_for_status()
-        return [i["key"] for i in r.json().get("issues", [])]
+        """JQL search.
+
+        Atlassian retired POST /rest/api/2/search in 2025; it answers 404/410 on
+        current Cloud sites, which silently disabled related-ticket lookup. Try
+        the replacement first and keep the old path as a fallback for Server/DC.
+        """
+        payload = {"jql": jql, "maxResults": limit, "fields": ["key"]}
+        last: Exception | None = None
+        for path in ("/rest/api/3/search/jql", "/rest/api/2/search"):
+            try:
+                r = self._http.post(path, json=payload)
+                r.raise_for_status()
+                return [i["key"] for i in r.json().get("issues", [])]
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code not in (404, 410):
+                    raise
+                last = e
+        raise RuntimeError(f"No usable Jira search endpoint: {last}")
 
     def fetch_attachment_text(self, content_url: str, max_bytes: int = 400_000) -> str:
         """Pull a text/log attachment. Binary types are skipped by the caller."""
@@ -126,48 +139,177 @@ class JiraClient:
         return r.json()["id"]
 
 
-def _to_adf(text: str) -> dict[str, Any]:
-    """Minimal Markdown -> ADF. Handles paragraphs, fenced code, and bullets."""
-    content: list[dict[str, Any]] = []
-    in_code = False
-    buf: list[str] = []
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_BULLET_RE = re.compile(r"^\s*[-*+]\s+(.*)$")
+_ORDERED_RE = re.compile(r"^\s*\d+[.)]\s+(.*)$")
+_RULE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+_TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 
-    def flush_para() -> None:
-        if not buf:
+# Inline spans, in precedence order. Code is matched first so that markers
+# inside a code span are treated as literal text.
+_INLINE_RE = re.compile(
+    r"""(?P<code>`[^`]+`)
+      | (?P<link>\[(?P<ltext>[^\]]+)\]\((?P<lurl>[^)\s]+)\))
+      | (?P<strong>\*\*(?P<stext>[^*]+)\*\*|__(?P<stext2>[^_]+)__)
+      | (?P<em>\*(?P<etext>[^*\n]+)\*|(?<![\w_])_(?P<etext2>[^_\n]+)_(?![\w_]))
+    """,
+    re.VERBOSE,
+)
+
+
+def _inline(text: str) -> list[dict[str, Any]]:
+    """Markdown inline spans -> ADF text nodes with marks.
+
+    ADF has no markdown parser, so `**bold**`, backticks, headings and tables
+    all post as literal punctuation unless converted here. That is what made
+    the generated comments look unformatted in Jira.
+    """
+    nodes: list[dict[str, Any]] = []
+
+    def push(value: str, marks: list[dict[str, Any]] | None = None) -> None:
+        if not value:
             return
-        content.append(
-            {
-                "type": "paragraph",
-                "content": [{"type": "text", "text": "\n".join(buf)}],
-            }
-        )
-        buf.clear()
+        node: dict[str, Any] = {"type": "text", "text": value}
+        if marks:
+            node["marks"] = marks
+        nodes.append(node)
 
-    def flush_code() -> None:
-        if not buf:
-            return
-        content.append(
-            {
-                "type": "codeBlock",
-                "attrs": {"language": "text"},
-                "content": [{"type": "text", "text": "\n".join(buf)}],
-            }
-        )
-        buf.clear()
-
-    for line in text.splitlines():
-        if line.strip().startswith("```"):
-            flush_code() if in_code else flush_para()
-            in_code = not in_code
-            continue
-        if in_code:
-            buf.append(line)
-        elif not line.strip():
-            flush_para()
+    pos = 0
+    for m in _INLINE_RE.finditer(text):
+        push(text[pos:m.start()])
+        if m.group("code"):
+            push(m.group("code")[1:-1], [{"type": "code"}])
+        elif m.group("link"):
+            push(
+                m.group("ltext"),
+                [{"type": "link", "attrs": {"href": m.group("lurl")}}],
+            )
+        elif m.group("strong"):
+            push(m.group("stext") or m.group("stext2"), [{"type": "strong"}])
         else:
-            buf.append(line)
-    flush_code() if in_code else flush_para()
+            push(m.group("etext") or m.group("etext2"), [{"type": "em"}])
+        pos = m.end()
+    push(text[pos:])
+    return nodes or [{"type": "text", "text": text}]
 
-    return {"type": "doc", "version": 1, "content": content or [
-        {"type": "paragraph", "content": [{"type": "text", "text": text[:3000]}]}
-    ]}
+
+def _para(text: str) -> dict[str, Any]:
+    return {"type": "paragraph", "content": _inline(text)}
+
+
+def _cells(row: str, header: bool) -> list[dict[str, Any]]:
+    kind = "tableHeader" if header else "tableCell"
+    return [
+        {"type": kind, "attrs": {}, "content": [_para(c.strip())]}
+        for c in row.split("|")
+    ]
+
+
+def _to_adf(text: str) -> dict[str, Any]:
+    """Markdown -> ADF.
+
+    Supports headings, bold/italic/inline-code/links, bullet and ordered
+    lists, fenced code, horizontal rules and pipe tables — i.e. everything
+    `render_markdown` actually emits.
+    """
+    content: list[dict[str, Any]] = []
+    lines = text.splitlines()
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if not stripped:
+            i += 1
+            continue
+
+        # fenced code
+        if stripped.startswith("```"):
+            lang = stripped[3:].strip() or "text"
+            i += 1
+            block: list[str] = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                block.append(lines[i])
+                i += 1
+            i += 1  # closing fence
+            content.append(
+                {
+                    "type": "codeBlock",
+                    "attrs": {"language": lang},
+                    "content": [{"type": "text", "text": "\n".join(block)}]
+                    if block
+                    else [],
+                }
+            )
+            continue
+
+        if _RULE_RE.match(line):
+            content.append({"type": "rule"})
+            i += 1
+            continue
+
+        if m := _HEADING_RE.match(stripped):
+            content.append(
+                {
+                    "type": "heading",
+                    "attrs": {"level": min(len(m.group(1)), 6)},
+                    "content": _inline(m.group(2)),
+                }
+            )
+            i += 1
+            continue
+
+        # pipe table: header row, separator, then body rows
+        if (
+            _TABLE_ROW_RE.match(line)
+            and i + 1 < len(lines)
+            and _TABLE_SEP_RE.match(lines[i + 1])
+        ):
+            header = _TABLE_ROW_RE.match(line).group(1)
+            rows = [{"type": "tableRow", "content": _cells(header, True)}]
+            i += 2
+            while i < len(lines) and (rm := _TABLE_ROW_RE.match(lines[i])):
+                rows.append({"type": "tableRow", "content": _cells(rm.group(1), False)})
+                i += 1
+            content.append({"type": "table", "attrs": {"isNumberColumnEnabled": False},
+                            "content": rows})
+            continue
+
+        # lists
+        for pattern, node_type in ((_BULLET_RE, "bulletList"), (_ORDERED_RE, "orderedList")):
+            if pattern.match(line):
+                items = []
+                while i < len(lines) and (lm := pattern.match(lines[i])):
+                    items.append(
+                        {"type": "listItem", "content": [_para(lm.group(1))]}
+                    )
+                    i += 1
+                content.append({"type": node_type, "content": items})
+                break
+        else:
+            # paragraph: consume until a blank line or a line that starts a
+            # different block, so wrapped prose stays one paragraph.
+            para: list[str] = []
+            while i < len(lines) and lines[i].strip():
+                nxt = lines[i]
+                if para and (
+                    _HEADING_RE.match(nxt.strip())
+                    or _BULLET_RE.match(nxt)
+                    or _ORDERED_RE.match(nxt)
+                    or _RULE_RE.match(nxt)
+                    or _TABLE_ROW_RE.match(nxt)
+                    or nxt.strip().startswith("```")
+                ):
+                    break
+                para.append(nxt.strip())
+                i += 1
+            content.append(_para(" ".join(para)))
+
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": content
+        or [{"type": "paragraph", "content": [{"type": "text", "text": text[:3000]}]}],
+    }
