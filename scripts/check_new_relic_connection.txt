@@ -1,0 +1,22 @@
+python3 -c "
+from dotenv import load_dotenv
+load_dotenv()
+import os
+from src.triage.clients.newrelic import NewRelicClient
+from src.triage.config import NewRelicConfig
+
+config = NewRelicConfig(
+    api_key=os.environ['NEW_RELIC_API_KEY'],
+    account_id=int(os.environ['NEW_RELIC_ACCOUNT_ID']),
+)
+client = NewRelicClient(config)
+result = client.nrql('SELECT count(*) FROM Log SINCE 1 hour ago LIMIT 1')
+print('SUCCESS:', result.results)
+"
+
+
+--------------------------To check the new relic connection from postman--------------------------------------------------
+curl --location 'https://api.newrelic.com/graphql' \
+--header 'Content-Type: application/json' \
+--header 'Api-Key: NRAK-NHKX425KC4M5JW206408IKWF1RS' \
+--data '{"query":"{ actor { accounts { id name } } }","variables":{}}'

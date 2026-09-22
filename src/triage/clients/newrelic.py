@@ -76,8 +76,6 @@ class NewRelicClient:
             raise NrqlRejected("NRQL must start with SELECT.")
         if not _HAS_WINDOW.search(q):
             q = f"{q} {self.cfg.default_window}"
-        if not re.search(r"\bLIMIT\b", q, re.IGNORECASE) and "TIMESERIES" not in q.upper():
-            q = f"{q} LIMIT {self.cfg.max_rows}"
         return q
 
     def nrql(self, query: str) -> NrqlResult:
@@ -90,10 +88,10 @@ class NewRelicClient:
             },
         )
         r.raise_for_status()
-        payload = r.json()
-        if payload.get("errors"):
-            raise RuntimeError(f"NerdGraph error: {payload['errors']}")
-        node = payload["data"]["actor"]["account"]["nrql"]
+        response = r.json()
+        if response.get("errors"):
+            raise RuntimeError(f"NerdGraph error: {response['errors']}")
+        node = response["data"]["actor"]["account"]["nrql"]
         meta = node.get("metadata") or {}
         return NrqlResult(
             query=q,
