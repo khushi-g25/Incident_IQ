@@ -26,6 +26,23 @@ class JiraCommentError(RuntimeError):
     """Posting failed, carrying Jira's own explanation rather than a bare 500."""
 
 
+# Jira Cloud's documented maximum for a comment body.
+JIRA_COMMENT_LIMIT = 32_767
+
+
+def _cap(text: str, limit: int = JIRA_COMMENT_LIMIT - 2_000) -> str:
+    """Last line of defence against CONTENT_LIMIT_EXCEEDED.
+
+    render_markdown already fits the comment to a budget; this catches any
+    other caller, and the case where unscrubbing redaction placeholders back to
+    real values pushed an already-tight body over the edge.
+    """
+    if len(text) <= limit:
+        return text
+    marker = "\n\n_[truncated to fit Jira's comment size limit]_"
+    return text[: limit - len(marker)].rsplit("\n", 1)[0] + marker
+
+
 def _chunk(text: str, size: int = 30_000) -> list[str]:
     """ADF rejects a single enormous text node; split on paragraph boundaries."""
     out, buf = [], ""
@@ -164,17 +181,22 @@ class JiraClient:
         bare 500 — and a rejected ADF must not lose the report, so a rich-format
         failure falls back to posting the markdown as plain text.
         """
+        markdown = _cap(markdown)
         try:
             return self._post_comment(key, _to_adf(markdown))
         except httpx.HTTPStatusError as e:
             if e.response.status_code != 400:
                 raise JiraCommentError(self._explain(e)) from e
+            # Plain-text retry, deliberately smaller: if the rich version was
+            # refused for size, re-sending the same volume as paragraphs fails
+            # the same way.
+            plain = _cap(markdown, JIRA_COMMENT_LIMIT // 2)
             fallback = {
                 "type": "doc",
                 "version": 1,
                 "content": [
                     {"type": "paragraph", "content": [{"type": "text", "text": chunk}]}
-                    for chunk in _chunk(markdown)
+                    for chunk in _chunk(plain)
                 ],
             }
             try:

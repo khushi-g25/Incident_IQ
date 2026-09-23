@@ -17,6 +17,10 @@ from pathlib import Path
 from typing import Any
 
 
+# Deep links dominate the size of the evidence table, so they are rationed.
+MAX_EVIDENCE_LINKS = 10
+
+
 def _cell(text: str) -> str:
     """Make a value safe to sit in a markdown table cell."""
     return str(text).replace("|", "\\|").replace("\n", " ").strip()
@@ -131,24 +135,71 @@ class RunTrace:
             "log_with_rows": len(log_hits),
         }
 
-    def evidence_markdown(self) -> str:
+    def evidence_markdown(self, max_rows: int = 20, links: bool = True) -> str:
         """Appendix for the Jira comment: what the agent actually looked at.
 
-        The query text itself goes in the table. Previously only the tool name,
-        the row count and a deep link were published, so a reader who wanted to
-        check a claim had nothing to copy into New Relic — and nothing at all if
-        the deep link failed to open.
+        The query text itself goes in the table, so a reader can re-run a claim
+        by hand. Both the row count and the links are capped, because Jira
+        rejects a comment over ~32k characters and a sixty-call run with a deep
+        link per row blows that on the appendix alone. The full, uncapped list
+        is always in the run trace on disk.
         """
         entries = self.evidence_entries
         if not entries:
             return "_No tools were called._"
-        lines = ["| # | tool | query or target | result | open |", "|---|---|---|---|---|"]
-        for i, e in enumerate(entries, start=1):
+
+        shown, omitted = entries, 0
+        if len(entries) > max_rows:
+            # Keep the calls that carry information: failures first, then calls
+            # that returned data, then the empty ones.
+            def rank(i: int) -> tuple[int, int]:
+                e = entries[i]
+                summary = e.result_summary or ""
+                if e.error:
+                    return (0, i)
+                if summary.endswith("rows") and not summary.startswith("0 "):
+                    return (1, i)
+                return (2, i)
+
+            keep = sorted(sorted(range(len(entries)), key=rank)[:max_rows])
+            shown = [entries[i] for i in keep]
+            omitted = len(entries) - len(shown)
+
+        header = "| # | tool | query or target | result | open |"
+        divider = "|---|---|---|---|---|"
+        if not links:
+            header, divider = header.replace(" open |", ""), divider[:-4]
+
+        lines = [header, divider]
+        linked = 0
+        for i, e in enumerate(shown, start=1):
             what = e.result_summary or e.error or ""
-            link = f"[open]({e.evidence_link})" if e.evidence_link else ""
-            lines.append(
-                f"| {i} | `{e.tool}` | {_cell(e.target)} | {_cell(what)} | {link} |"
-            )
+            row = f"| {i} | `{e.tool}` | {_cell(e.target)} | {_cell(what)} |"
+            if links:
+                # A New Relic deep link carries the whole query base64-encoded
+                # and runs to ~750 characters; forty of them overflow Jira's
+                # comment limit on their own. Only queries that returned
+                # something get one — nobody needs to open an empty result, and
+                # the query text beside it is copy-pasteable regardless.
+                worth_opening = (
+                    e.evidence_link
+                    and what.endswith("rows")
+                    and not what.startswith("0 ")
+                    and linked < MAX_EVIDENCE_LINKS
+                )
+                if worth_opening:
+                    row += f" [open]({e.evidence_link}) |"
+                    linked += 1
+                else:
+                    row += "  |"
+            lines.append(row)
+
+        if omitted:
+            lines += [
+                "",
+                f"_{omitted} further call(s) omitted — mostly empty results. "
+                f"The complete list is in run `{self.run_id}`._",
+            ]
         return "\n".join(lines)
 
     def logs_checked_markdown(self) -> str:

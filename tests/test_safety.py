@@ -20,6 +20,7 @@ from triage.extract import extract_brief
 from triage.guardrails import build_hooks
 from triage.redact import Redactor
 from triage.schema import (
+    MAX_COMMENT_CHARS,
     REPORT_SCHEMA,
     normalize_report,
     render_markdown,
@@ -573,6 +574,80 @@ def test_logs_checked_lists_each_filter_and_hit_count() -> None:
 
 def test_suggested_fix_is_required_by_the_schema() -> None:
     assert "suggested_fix" in REPORT_SCHEMA["properties"]["root_cause"]["required"]
+
+
+# ------------------------------------------------------- Jira size limit
+#
+# A real post failed with CONTENT_LIMIT_EXCEEDED: a 39-call run produced an
+# evidence appendix of ~26k characters, mostly deep links, and Jira rejected
+# the whole comment.
+
+
+def _fat_trace(calls: int = 40) -> RunTrace:
+    t = RunTrace(ticket="SQ-1")
+    for i in range(calls):
+        t.add(
+            "nr_query",
+            {"nrql": f"SELECT count(*) FROM Transaction WHERE n={i} " + "x" * 150},
+            result_summary="0 rows" if i % 3 else "5 rows",
+            evidence_link="https://one.newrelic.com/launcher/x?pane=" + "b" * 700,
+        )
+    return t
+
+
+def test_evidence_table_is_capped_and_says_what_it_dropped() -> None:
+    md = _fat_trace().evidence_markdown(max_rows=20)
+    assert md.count("| `nr_query` |") == 20
+    assert "further call(s) omitted" in md
+
+
+def test_capped_table_keeps_the_calls_that_returned_data() -> None:
+    """Empty results are the ones worth dropping."""
+    t = RunTrace(ticket="SQ-1")
+    for i in range(30):
+        t.add("nr_query", {"nrql": f"q{i}"},
+              result_summary="7 rows" if i < 5 else "0 rows")
+    t.add("nr_query", {"nrql": "boom"}, error="rejected")
+    md = t.evidence_markdown(max_rows=6)
+    for i in range(5):
+        assert f"q{i}" in md              # non-empty results survive
+    assert "boom" in md                   # so do failures
+
+
+def test_oversized_comment_is_trimmed_but_keeps_every_finding() -> None:
+    t = _fat_trace()
+    big = "y" * 900
+    report = {
+        **BASE_REPORT,
+        "root_cause": {"explanation": big, "component": "c", "suggested_fix": big},
+        "blast_radius": {"described": big},
+    }
+    md = render_markdown(
+        report, t.evidence_markdown(), "run1",
+        ["a caveat " * 30] * 4, logs_md=t.logs_checked_markdown(),
+    )
+    assert len(md) <= MAX_COMMENT_CHARS
+    # The diagnosis is never what gets sacrificed.
+    for section in (
+        "### Summary", "### Recommended fix", "### Checklist",
+        "### Preventing a repeat", "### In short",
+    ):
+        assert section in md, f"{section} was dropped to fit"
+    assert md.rstrip().endswith("verify before acting on it_")
+
+
+def test_a_small_comment_is_left_alone() -> None:
+    md = render_markdown(dict(BASE_REPORT), "| t |", "run1")
+    assert "### Queries run" in md
+    assert "truncated to fit" not in md
+
+
+def test_jira_client_caps_an_oversized_body_as_a_last_resort() -> None:
+    from triage.clients.jira import JIRA_COMMENT_LIMIT, _cap
+
+    out = _cap("line\n" * 20_000)
+    assert len(out) < JIRA_COMMENT_LIMIT
+    assert "truncated to fit" in out
 
 
 def test_caveats_are_surfaced_in_the_comment() -> None:
