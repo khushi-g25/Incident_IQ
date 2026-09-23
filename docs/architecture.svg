@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8b97a3"/></marker></defs>
+<rect width="1600" height="900" fill="#ffffff"/>
+<text x="40" y="58" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="31" font-weight="700" fill="#151b21" text-anchor="start" opacity="1.0">Incident IQ — Architecture</text>
+<text x="40" y="86" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">Jira ticket in, evidence-backed root cause out. One model step; everything around it is deterministic.</text>
+<line x1="40" y1="104" x2="1560" y2="104" stroke="#e3e8ed" stroke-width="1.5"/>
+<rect x="40" y="148" width="180" height="382" rx="10" ry="10" fill="#f5f7f9" stroke="#bcc6d0" stroke-width="1.6"/>
+<text x="58" y="176" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="700" fill="#6a7481" text-anchor="start" opacity="1.0">ENTRY POINTS</text>
+<rect x="58" y="206" width="144" height="66" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="70" y="233" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">CLI</text>
+<text x="70" y="254" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="12" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">triage SQ-1234</text>
+<rect x="58" y="306" width="144" height="66" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="70" y="333" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">Approval UI</text>
+<text x="70" y="354" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="12" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">port 8090</text>
+<rect x="58" y="406" width="144" height="66" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="70" y="433" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">Jira webhook</text>
+<text x="70" y="454" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="12" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">port 8080</text>
+<line x1="228" y1="339.0" x2="250" y2="339.0" stroke="#8b97a3" stroke-width="2" marker-end="url(#a)"/>
+<rect x="258" y="148" width="214" height="382" rx="10" ry="10" fill="#eef3f9" stroke="#9cb6d1" stroke-width="1.6"/>
+<text x="276" y="176" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="700" fill="#3f6188" text-anchor="start" opacity="1.0">1 · INTAKE</text>
+<text x="276" y="198" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">deterministic — no model</text>
+<text x="276" y="230" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">fetch issue + comments</text>
+<text x="276" y="249" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">pull .log / .txt attachments</text>
+<rect x="276" y="260" width="178" height="80" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="288" y="284" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="13.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">extract.py</text>
+<text x="288" y="304" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">ids · timestamps · exceptions</text>
+<text x="288" y="320" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">stack frames · NRQL window</text>
+<rect x="276" y="352" width="178" height="54" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="288" y="375" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="13.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">redact.py</text>
+<text x="288" y="394" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">PII → &lt;EMAIL_1&gt; placeholders</text>
+<text x="276" y="516" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="600" fill="#3f6188" text-anchor="start" opacity="1.0">→ TicketBrief</text>
+<line x1="480" y1="339.0" x2="502" y2="339.0" stroke="#8b97a3" stroke-width="2" marker-end="url(#a)"/>
+<rect x="500" y="266.0" width="118" height="146" rx="10" ry="10" fill="#fdeeec" stroke="#d4544f" stroke-width="1.6"/>
+<text x="559.0" y="294.0" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="700" fill="#a33c38" text-anchor="middle" opacity="1.0">2 · GATE</text>
+<text x="559.0" y="320.0" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="400" fill="#151b21" text-anchor="middle" opacity="1.0">machine-</text>
+<text x="559.0" y="337.0" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="400" fill="#151b21" text-anchor="middle" opacity="1.0">usable</text>
+<text x="559.0" y="354.0" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="400" fill="#151b21" text-anchor="middle" opacity="1.0">signal?</text>
+<text x="559.0" y="386.0" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="600" fill="#a33c38" text-anchor="middle" opacity="1.0">no → bounce</text>
+<line x1="626" y1="339.0" x2="648" y2="339.0" stroke="#8b97a3" stroke-width="2" marker-end="url(#a)"/>
+<rect x="646" y="148" width="456" height="382" rx="10" ry="10" fill="#fff7e8" stroke="#e2a531" stroke-width="2.2"/>
+<text x="666" y="176" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="700" fill="#8a6414" text-anchor="start" opacity="1.0">3 · AGENT LOOP</text>
+<text x="666" y="198" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">Claude Agent SDK · the only non-deterministic step</text>
+<rect x="666" y="214" width="196" height="74" rx="8" ry="8" fill="#ffffff" stroke="#e0c789" stroke-width="1.6"/>
+<text x="678" y="236" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="12.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">prompts/system.md</text>
+<text x="678" y="255" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">the triage method</text>
+<text x="678" y="276" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">playbook.yaml — your estate</text>
+<rect x="878" y="214" width="204" height="74" rx="8" ry="8" fill="#ffffff" stroke="#e0c789" stroke-width="1.6"/>
+<text x="890" y="236" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="12.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">REPORT_SCHEMA</text>
+<text x="890" y="255" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">forced structured output</text>
+<text x="890" y="276" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">verdict · fix · prevention</text>
+<text x="666" y="314" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">tools.py — in-process MCP · 13 read-only tools</text>
+<text x="666" y="343" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="600" fill="#8a6414" text-anchor="start" opacity="1.0">discover</text>
+<rect x="738" y="326" width="57.300000000000004" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="766.65" y="342.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">nr_apps</text>
+<rect x="801.3" y="326" width="105.60000000000001" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="854.0999999999999" y="342.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">nr_event_types</text>
+<rect x="912.9" y="326" width="98.7" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="962.25" y="342.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">nr_attributes</text>
+<text x="666" y="373" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="600" fill="#8a6414" text-anchor="start" opacity="1.0">telemetry</text>
+<rect x="738" y="356" width="64.2" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="770.1" y="372.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">nr_query</text>
+<rect x="808.2" y="356" width="105.60000000000001" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="861.0" y="372.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">nr_find_errors</text>
+<rect x="919.8000000000001" y="356" width="57.300000000000004" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="948.45" y="372.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">nr_logs</text>
+<rect x="983.1" y="356" width="64.2" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="1015.2" y="372.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">nr_trace</text>
+<text x="666" y="403" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="600" fill="#8a6414" text-anchor="start" opacity="1.0">code</text>
+<rect x="738" y="386" width="105.60000000000001" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="790.8" y="402.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">gh_search_code</text>
+<rect x="849.6" y="386" width="57.300000000000004" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="878.25" y="402.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">gh_file</text>
+<rect x="912.9" y="386" width="64.2" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="945.0" y="402.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">gh_blame</text>
+<rect x="983.1" y="386" width="112.5" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="1039.35" y="402.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">gh_file_history</text>
+<text x="666" y="433" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="600" fill="#8a6414" text-anchor="start" opacity="1.0">history</text>
+<rect x="738" y="416" width="147.0" height="24" rx="12" ry="12" fill="#ffffff" stroke="#e0c789" stroke-width="1.3"/>
+<text x="811.5" y="432.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#6b5320" text-anchor="middle" opacity="1.0">jira_related_tickets</text>
+<rect x="666" y="488" width="416" height="22" rx="6" ry="6" fill="#fdeeec" stroke="#d4544f" stroke-width="1.6"/>
+<text x="676" y="503.5" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="600" fill="#a33c38" text-anchor="start" opacity="1.0">guardrails.py · PreToolUse: no writes · no path escape · 60-call budget</text>
+<line x1="1110" y1="339.0" x2="1132" y2="339.0" stroke="#8b97a3" stroke-width="2" marker-end="url(#a)"/>
+<rect x="1130" y="148" width="202" height="382" rx="10" ry="10" fill="#eef3f9" stroke="#9cb6d1" stroke-width="1.6"/>
+<text x="1148" y="176" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="700" fill="#3f6188" text-anchor="start" opacity="1.0">4 · RENDER</text>
+<text x="1148" y="198" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">deterministic</text>
+<rect x="1148" y="218" width="166" height="52" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="1160" y="240" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="12.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">normalize_report</text>
+<text x="1160" y="258" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">repair the shape</text>
+<rect x="1148" y="280" width="166" height="52" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="1160" y="302" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="12.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">validate_report</text>
+<text x="1160" y="320" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">cap confidence</text>
+<rect x="1148" y="342" width="166" height="52" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="1160" y="364" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="12.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">render_markdown</text>
+<text x="1160" y="382" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">fit to 16k</text>
+<rect x="1148" y="404" width="166" height="52" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="1160" y="426" font-family="'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas, monospace" font-size="12.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">_to_adf</text>
+<text x="1160" y="444" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">Jira rich text</text>
+<rect x="40" y="588" width="1060" height="96" rx="10" ry="10" fill="#f5f7f9" stroke="#bcc6d0" stroke-width="1.6" stroke-dasharray="5 4"/>
+<text x="58" y="614" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="700" fill="#6a7481" text-anchor="start" opacity="1.0">READ-ONLY SOURCES</text>
+<text x="200" y="614" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">— no write methods exist in the client code</text>
+<rect x="58" y="626" width="330" height="44" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="72" y="646" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">New Relic</text>
+<text x="72" y="662" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">NerdGraph NRQL · logs, errors, traces</text>
+<rect x="406" y="626" width="330" height="44" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="420" y="646" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">GitHub</text>
+<text x="420" y="662" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">Contents + PRs · default branch</text>
+<rect x="754" y="626" width="330" height="44" rx="8" ry="8" fill="#ffffff" stroke="#ccd5de" stroke-width="1.6"/>
+<text x="768" y="646" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">Jira</text>
+<text x="768" y="662" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">issues, comments, JQL search</text>
+<line x1="874.0" y1="536" x2="874.0" y2="582" stroke="#8b97a3" stroke-width="2" marker-end="url(#a)"/>
+<line x1="850.0" y1="582" x2="850.0" y2="536" stroke="#8b97a3" stroke-width="2" marker-end="url(#a)"/>
+<text x="886.0" y="570" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">queries</text>
+<rect x="1130" y="588" width="430" height="96" rx="10" ry="10" fill="#eaf7ef" stroke="#39a065" stroke-width="1.6"/>
+<text x="1148" y="614" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="700" fill="#1f7a49" text-anchor="start" opacity="1.0">OUTPUTS</text>
+<text x="1148" y="636" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="400" fill="#1f7a49" text-anchor="start" opacity="1.0">•</text>
+<text x="1162" y="636" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">Jira comment</text>
+<text x="1251.2" y="636" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">only on --post or Approve</text>
+<text x="1148" y="655" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="400" fill="#1f7a49" text-anchor="start" opacity="1.0">•</text>
+<text x="1162" y="655" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">.runs/prevention/*.md</text>
+<text x="1310.6" y="655" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">was it a code bug, how to prevent it</text>
+<text x="1148" y="674" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="400" fill="#1f7a49" text-anchor="start" opacity="1.0">•</text>
+<text x="1162" y="674" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="600" fill="#151b21" text-anchor="start" opacity="1.0">.runs/*.json</text>
+<text x="1251.2" y="674" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">every query, for audit</text>
+<line x1="1231.0" y1="536" x2="1231.0" y2="582" stroke="#8b97a3" stroke-width="2" marker-end="url(#a)"/>
+<rect x="40" y="718" width="1520" height="74" rx="10" ry="10" fill="#fbfcfd" stroke="#e3e8ed" stroke-width="1.6"/>
+<text x="58" y="744" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="700" fill="#6a7481" text-anchor="start" opacity="1.0">WHY IT IS SPLIT THIS WAY</text>
+<text x="58" y="766" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">Regex, gating, rendering and validation are ordinary testable code — only the investigation itself is left to the model, and it is bounded on turns, dollars and tool calls at once.</text>
+<text x="58" y="784" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">Confidence is checked against the run trace rather than taken on trust: a verdict with no New Relic evidence, or built only on ticket comments, is downgraded and the reason is printed in the comment.</text>
+<rect x="40" y="820" width="16" height="16" rx="4" ry="4" fill="#eef3f9" stroke="#9cb6d1" stroke-width="1.6"/>
+<text x="64" y="833" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">deterministic code</text>
+<rect x="200.0" y="820" width="16" height="16" rx="4" ry="4" fill="#fff7e8" stroke="#e2a531" stroke-width="1.6"/>
+<text x="224.0" y="833" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">model step</text>
+<rect x="304.0" y="820" width="16" height="16" rx="4" ry="4" fill="#fdeeec" stroke="#d4544f" stroke-width="1.6"/>
+<text x="328.0" y="833" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">hard gate / guardrail</text>
+<rect x="485.0" y="820" width="16" height="16" rx="4" ry="4" fill="#eaf7ef" stroke="#39a065" stroke-width="1.6"/>
+<text x="509.0" y="833" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">output</text>
+<rect x="561.0" y="820" width="16" height="16" rx="4" ry="4" fill="#f5f7f9" stroke="#bcc6d0" stroke-width="1.6"/>
+<text x="585.0" y="833" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5b6672" text-anchor="start" opacity="1.0">external, read-only</text>
+<text x="1560" y="833" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="400" fill="#5b6672" text-anchor="end" opacity="1.0">13 tools · 60-call budget · ~$0.50–0.80 per ticket</text>
+</svg>

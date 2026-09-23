@@ -9,6 +9,12 @@ behind individual decisions see [README.md](README.md).
 
 ## 1. The shape of it
 
+![Incident IQ architecture](docs/architecture.png)
+
+*Slide-ready copies: [`docs/architecture.png`](docs/architecture.png) (3200×1800)
+and [`docs/architecture.svg`](docs/architecture.svg) (vector). Regenerate with
+`python3 docs/make_architecture_diagram.py` after changing the system.*
+
 One deterministic pipeline with a single non-deterministic step in the middle.
 Everything before and after the agent loop is ordinary code you can unit-test,
 which is what makes the output auditable.

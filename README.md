@@ -22,8 +22,10 @@ comment for a human to accept, correct, or reject.
 
 ## Architecture
 
+![Incident IQ architecture](docs/architecture.png)
+
 Full diagrams — module map, phase-by-phase flow, trust boundaries — are in
-**[ARCHITECTURE.md](ARCHITECTURE.md)**. The sketch below is the short version.
+**[ARCHITECTURE.md](ARCHITECTURE.md)**. The sketch below is the text version.
 
 ```
 Jira webhook / CLI
