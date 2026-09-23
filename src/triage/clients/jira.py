@@ -150,6 +150,9 @@ class JiraClient:
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_RE = re.compile(r"^\s*[-*+]\s+(.*)$")
+# Checklist items must be matched before plain bullets: ADF has a real
+# taskList node, so these render as tickable boxes rather than "[x] " text.
+_TASK_RE = re.compile(r"^\s*[-*+]\s+\[([ xX])\]\s+(.*)$")
 _ORDERED_RE = re.compile(r"^\s*\d+[.)]\s+(.*)$")
 _RULE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
 _TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
@@ -284,6 +287,30 @@ def _to_adf(text: str) -> dict[str, Any]:
                 i += 1
             content.append({"type": "table", "attrs": {"isNumberColumnEnabled": False},
                             "content": rows})
+            continue
+
+        # checklist -> ADF taskList
+        if _TASK_RE.match(line):
+            items = []
+            while i < len(lines) and (tm := _TASK_RE.match(lines[i])):
+                items.append(
+                    {
+                        "type": "taskItem",
+                        "attrs": {
+                            "localId": f"task-{len(content)}-{len(items)}",
+                            "state": "DONE" if tm.group(1).lower() == "x" else "TODO",
+                        },
+                        "content": _inline(tm.group(2)),
+                    }
+                )
+                i += 1
+            content.append(
+                {
+                    "type": "taskList",
+                    "attrs": {"localId": f"tasklist-{len(content)}"},
+                    "content": items,
+                }
+            )
             continue
 
         # lists

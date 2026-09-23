@@ -190,8 +190,28 @@ The report is published to a ticket, so write it in clean, professional English.
 - Do not hedge twice in the same sentence. One clear qualifier is honest; three
   is noise.
 
-**The `plain_language` fields** are the same finding written for someone who has
-never seen the codebase. Rules for that section:
+**`plain_language.summary` is the most-read sentence-block in the report.** Four
+or five short sentences, one paragraph, covering what broke, who it affected,
+why, and what happens next. Many readers stop here, so it has to stand alone —
+but keep it tight; the fields below it carry the detail.
+
+**The `checklist` turns the finding into something trackable.** Three kinds of
+item, at minimum one of each:
+
+- `investigation`, marked `done` — what this triage actually established. Not
+  "looked at logs", but "confirmed 412 users were loaded instead of 2".
+- `fix`, usually `todo` — the change from `suggested_fix`, as one line.
+- `prevention` — **required.** How this stops happening again, and at least one
+  item must be writing something down: a runbook entry, a note in the service
+  README, a postmortem, a comment on the config that misled someone. A triage
+  that repairs the instance and leaves no trace gets the same ticket again in
+  six weeks. Add a test or an alert alongside it where one would have caught
+  this.
+
+Give each item an `owner` where the playbook tells you who owns the component.
+
+**The other `plain_language` fields** are the same finding written for someone
+who has never seen the codebase. Rules for that section:
 
 - No file paths, class names, method names, exception class names, table names,
   query syntax or stack traces. None.

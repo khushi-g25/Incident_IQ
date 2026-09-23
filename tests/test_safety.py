@@ -259,11 +259,19 @@ BASE_REPORT = {
     "signals_confirmed": {"logs": "confirmed", "code": "confirmed", "data": "confirmed"},
     "one_line_summary": "x",
     "plain_language": {
-        "what_happened": "a",
+        "summary": "A short plain paragraph that stands on its own.",
         "customer_impact": "b",
         "why_it_happened": "c",
         "what_we_recommend": "d",
     },
+    "checklist": [
+        {"item": "Confirmed the failure in New Relic", "status": "done",
+         "category": "investigation"},
+        {"item": "Hoist the call out of the loop", "status": "todo",
+         "category": "fix", "owner": "#pos-team"},
+        {"item": "Add the failure mode to the runbook", "status": "todo",
+         "category": "prevention", "owner": "#eps-core"},
+    ],
     "root_cause": {"explanation": "e", "component": "f"},
     "evidence": [{"source": "code", "claim": "c", "detail": "d", "query_or_path": "a.rb"}],
     "blast_radius": {"described": "g"},
@@ -413,8 +421,10 @@ def test_comment_leads_with_plain_language_before_any_code() -> None:
         "trace",
         "run1",
     )
-    assert md.index("What happened") < md.index("Technical detail")
+    assert md.index("### Summary") < md.index("Technical detail")
     assert md.index("What we recommend") < md.index("app/models/order.rb")
+    # The 4-5 line paragraph leads; the labelled detail follows it.
+    assert md.index("### Summary") < md.index("Who this affected")
     # Raw enum values should not reach the reader.
     assert "root_cause_identified" not in md
     assert "cause identified" in md
@@ -448,6 +458,66 @@ def test_recommended_fix_is_always_rendered() -> None:
     without = render_markdown(dict(BASE_REPORT), "t", "r")
     assert "### Recommended fix" in without
     assert "No fix was proposed" in without
+
+
+def test_summary_paragraph_is_required_and_leads_the_comment() -> None:
+    assert "summary" in REPORT_SCHEMA["properties"]["plain_language"]["required"]
+    md = render_markdown(dict(BASE_REPORT), "t", "r")
+    body = md[md.index("### Summary"):]
+    assert body.startswith(
+        "### Summary\nA short plain paragraph that stands on its own."
+    )
+
+
+def test_checklist_renders_as_tickable_items() -> None:
+    md = render_markdown(dict(BASE_REPORT), "t", "r")
+    assert "### Checklist" in md
+    assert "- [x] **Investigation:** Confirmed the failure in New Relic" in md
+    assert "- [ ] **Fix:** Hoist the call out of the loop — _#pos-team_" in md
+    assert "- [ ] **Prevention:** Add the failure mode to the runbook" in md
+
+
+def test_checklist_is_required_by_the_schema() -> None:
+    assert "checklist" in REPORT_SCHEMA["required"]
+    assert REPORT_SCHEMA["properties"]["checklist"]["minItems"] == 3
+
+
+def test_checklist_without_a_prevention_item_is_flagged() -> None:
+    """A triage that repairs the instance and leaves nothing behind gets the
+    same ticket again."""
+    report = {
+        **BASE_REPORT,
+        "checklist": [
+            {"item": "Confirmed it", "status": "done", "category": "investigation"},
+            {"item": "Ship the fix", "status": "todo", "category": "fix"},
+        ],
+    }
+    _, notes = validate_report(report, GOOD_STATS)
+    assert any("no prevention item" in n for n in notes)
+
+
+def test_checklist_with_a_prevention_item_is_not_flagged() -> None:
+    _, notes = validate_report(dict(BASE_REPORT), GOOD_STATS)
+    assert not any("prevention" in n for n in notes)
+
+
+def test_not_applicable_checklist_items_are_marked() -> None:
+    md = render_markdown(
+        {**BASE_REPORT, "checklist": [
+            {"item": "Notify customers", "status": "not_applicable",
+             "category": "communication"}]},
+        "t", "r",
+    )
+    assert "- [ ] **Comms:** Notify customers _(not applicable)_" in md
+
+
+def test_checklist_arriving_as_a_string_is_recovered() -> None:
+    r = normalize_report({
+        **BASE_REPORT,
+        "checklist": "[{'item': 'x', 'status': 'done', 'category': 'fix'}]",
+    })
+    assert isinstance(r["checklist"], list)
+    assert r["checklist"][0]["item"] == "x"
 
 
 def test_suggested_fix_is_required_by_the_schema() -> None:
@@ -501,6 +571,15 @@ def test_pipe_tables_become_adf_tables() -> None:
     assert table["content"][0]["content"][0]["type"] == "tableHeader"
     assert table["content"][1]["content"][0]["type"] == "tableCell"
     assert "|---|" not in blob
+
+
+def test_checklist_becomes_an_adf_tasklist_not_literal_brackets() -> None:
+    doc, blob = _adf("- [x] Confirmed it\n- [ ] Write the runbook entry")
+    task_list = doc["content"][0]
+    assert task_list["type"] == "taskList"
+    states = [i["attrs"]["state"] for i in task_list["content"]]
+    assert states == ["DONE", "TODO"]
+    assert "[x]" not in blob and "[ ]" not in blob
 
 
 def test_bullet_and_ordered_lists_are_distinguished() -> None:

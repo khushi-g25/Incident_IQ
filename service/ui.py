@@ -240,6 +240,10 @@ _PAGE = r"""<!doctype html>
   }
   .report th { background: #f6f8fa; font-weight: 600; }
   .muted { color: #888; font-style: italic; }
+  .report ul.tasklist { list-style: none; padding-left: 2px; }
+  .report li.task { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 6px; }
+  .report li.task input { margin-top: 3px; flex-shrink: 0; }
+  .report li.task .done { color: #57606a; }
   /* The fix panel is the actionable part of the page, so it gets a tinted
      card rather than sitting flush with the surrounding prose. */
   .fix {
@@ -386,6 +390,23 @@ function renderMarkdown(md) {
 
     const isBullet = l => /^\s*[-*+]\s+/.test(l);
     const isOrdered = l => /^\s*\d+[.)]\s+/.test(l);
+    const TASK = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/;
+
+    // Checklist before plain bullets, so items render as real boxes.
+    if (TASK.test(line)) {
+      const items = [];
+      let m;
+      while (i < lines.length && (m = lines[i].match(TASK))) {
+        const done = m[1].toLowerCase() === 'x';
+        items.push('<li class="task"><input type="checkbox" disabled' +
+                   (done ? ' checked' : '') + '> <span' +
+                   (done ? ' class="done"' : '') + '>' + inlineMd(m[2]) + '</span></li>');
+        i++;
+      }
+      out.push('<ul class="tasklist">' + items.join('') + '</ul>');
+      continue;
+    }
+
     if (isBullet(line) || isOrdered(line)) {
       const ordered = isOrdered(line) && !isBullet(line);
       const test = ordered ? isOrdered : isBullet;

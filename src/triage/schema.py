@@ -22,6 +22,7 @@ REPORT_SCHEMA: dict[str, Any] = {
         "root_cause",
         "evidence",
         "blast_radius",
+        "checklist",
         "unverified",
         "next_actions",
     ],
@@ -70,7 +71,7 @@ REPORT_SCHEMA: dict[str, Any] = {
             "type": "object",
             "additionalProperties": False,
             "required": [
-                "what_happened",
+                "summary",
                 "customer_impact",
                 "why_it_happened",
                 "what_we_recommend",
@@ -82,10 +83,14 @@ REPORT_SCHEMA: dict[str, Any] = {
             "cause is unconfirmed, say so plainly here rather than implying a "
             "diagnosis.",
             "properties": {
-                "what_happened": {
+                "summary": {
                     "type": "string",
-                    "description": "2-3 sentences describing the observed "
-                    "problem in business terms.",
+                    "maxLength": 700,
+                    "description": "The whole finding in 4-5 short sentences, "
+                    "as one plain paragraph. This is the only part many readers "
+                    "will read, so it must stand alone: what broke, who it "
+                    "affected, why, and what happens next. Simple words, no "
+                    "jargon, no file paths, no bullet points.",
                 },
                 "customer_impact": {
                     "type": "string",
@@ -194,6 +199,39 @@ REPORT_SCHEMA: dict[str, Any] = {
                 "measured_by": {"type": "string"},
             },
         },
+        "checklist": {
+            "type": "array",
+            "minItems": 3,
+            "description": "What has been done and what still has to happen, as "
+            "tickable items. Cover three things: what this triage established "
+            "(status 'done'), the fix itself (usually 'todo'), and at least one "
+            "'prevention' item. Prevention must include writing or updating a "
+            "document — a runbook entry, a note in the service README, a "
+            "postmortem — so the next person recognises this failure instead of "
+            "rediscovering it. Keep each item one short line.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["item", "status", "category"],
+                "properties": {
+                    "item": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["done", "todo", "not_applicable"],
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "investigation",
+                            "fix",
+                            "prevention",
+                            "communication",
+                        ],
+                    },
+                    "owner": {"type": "string"},
+                },
+            },
+        },
         "unverified": {
             "type": "array",
             "items": {"type": "string"},
@@ -239,6 +277,12 @@ _SIGNAL_LABEL = {
     "absent": "checked, nothing found",
     "not_checked": "not checked",
 }
+_CATEGORY_LABEL = {
+    "investigation": "Investigation",
+    "fix": "Fix",
+    "prevention": "Prevention",
+    "communication": "Comms",
+}
 _FIX_TYPE_LABEL = {
     "code_change": "a code change",
     "config_change": "a configuration change",
@@ -249,7 +293,7 @@ _FIX_TYPE_LABEL = {
 }
 
 _NESTED_FIELDS = ("root_cause", "blast_radius", "plain_language", "signals_confirmed")
-_LIST_FIELDS = ("evidence", "next_actions", "unverified")
+_LIST_FIELDS = ("evidence", "next_actions", "unverified", "checklist")
 
 
 def normalize_report(report: dict[str, Any]) -> dict[str, Any]:
@@ -302,6 +346,16 @@ def validate_report(
         signals = {}
     confirmed = {k for k, v in signals.items() if v == "confirmed"}
     notes: list[str] = []
+
+    # A triage that fixes the instance and leaves nothing behind gets the same
+    # ticket again in six weeks, so the prevention item is not optional.
+    checklist = [c for c in (r.get("checklist") or []) if isinstance(c, dict)]
+    if checklist and not any(c.get("category") == "prevention" for c in checklist):
+        notes.append(
+            "The checklist has no prevention item. Nothing here stops this "
+            "recurring — at minimum, someone should write the failure mode down "
+            "in a runbook or the service README."
+        )
 
     cited = [
         e for e in (r.get("evidence") or [])
@@ -423,10 +477,12 @@ def render_markdown(
     ]
 
     # ---- plain-language section, for readers who are not engineers ----------
+    # The paragraph leads, because most readers stop after it. The labelled
+    # lines below it answer the follow-up questions without re-reading.
     if pl:
-        lines += ["### Summary"]
+        if pl.get("summary"):
+            lines += ["### Summary", pl["summary"], ""]
         for label, key in (
-            ("What happened", "what_happened"),
             ("Who this affected", "customer_impact"),
             ("Why it happened", "why_it_happened"),
             ("What we recommend", "what_we_recommend"),
@@ -455,6 +511,23 @@ def render_markdown(
         lines += [f"**How to confirm it worked.** {rc['fix_verification']}", ""]
     if rc.get("workaround"):
         lines += [f"**Interim workaround.** {rc['workaround']}", ""]
+
+    # ---- checklist ---------------------------------------------------------
+    if r.get("checklist"):
+        lines += ["### Checklist", ""]
+        for c in r["checklist"]:
+            if not isinstance(c, dict) or not c.get("item"):
+                continue
+            box = "[x]" if c.get("status") == "done" else "[ ]"
+            tail = ""
+            if c.get("status") == "not_applicable":
+                tail = " _(not applicable)_"
+            elif c.get("owner"):
+                tail = f" — _{c['owner']}_"
+            cat = c.get("category")
+            label = f"**{_CATEGORY_LABEL[cat]}:** " if cat in _CATEGORY_LABEL else ""
+            lines.append(f"- {box} {label}{c['item']}{tail}")
+        lines.append("")
 
     if caveats:
         lines += ["### Read this before acting on it"]
