@@ -3,7 +3,9 @@
     pip install python-pptx
     python3 docs/make_deck.py
 
-Writes docs/Incident_IQ.pptx — 16:9, with speaker notes on every slide.
+Writes docs/Incident_IQ.pptx — five slides, 16:9, speaker notes on each.
+Deliberately short: what it does, how it is built, what it produces, and what
+it is not allowed to do. The detail lives in ARCHITECTURE.md, not on a slide.
 
 Palette note: the accents are blue #2a78d6 and amber #e2a531, validated for
 colour-vision deficiency (worst adjacent dE 31.2). An earlier red/green pairing
@@ -143,76 +145,56 @@ def bullets(s, items, y=Inches(1.62), size=17, gap=13, width=None):
     return tf
 
 
+
 # ============================================================ 1 · title
 s = prs.slides.add_slide(BLANK)
 panel(s, Emu(0), Emu(0), W, Inches(0.09), fill=BLUE, border=None, radius=False)
-tf = tb(s, L, Inches(2.25), Inches(10.4), Inches(1.6))
-put(tf, "Incident IQ", size=54, bold=True, first=True, space_after=6, line=1.0)
+tf = tb(s, L, Inches(2.35), Inches(10.6), Inches(1.7))
+put(tf, "Incident IQ", size=56, bold=True, first=True, space_after=8, line=1.0)
 put(tf, "Automated first-pass triage for SQ / EPS tickets",
-    size=23, color=SEC, space_after=0)
-rule(s, L, Inches(4.05), Inches(1.5), BLUE, Pt(3))
-tf = tb(s, L, Inches(4.35), Inches(10.4), Inches(1.0))
-put(tf, "Ticket in, evidence-backed root cause out — with the queries that "
-        "prove it, a recommended fix, and a note on how to stop it recurring.",
-    size=16, color=SEC, first=True, space_after=0)
-tf = tb(s, L, Inches(6.5), Inches(10.4), Inches(0.4))
+    size=24, color=SEC, space_after=0)
+rule(s, L, Inches(4.25), Inches(1.5), BLUE, Pt(3))
+tf = tb(s, L, Inches(4.6), Inches(10.6), Inches(0.6))
+put(tf, "Ticket in, evidence-backed root cause out.",
+    size=18, color=SEC, first=True, space_after=0)
+tf = tb(s, L, Inches(6.5), Inches(10.6), Inches(0.4))
 put(tf, "Read-only by construction  ·  nothing posts without a human approving it",
     size=13, color=MUT, first=True, space_after=0)
-notes(s, "One-line pitch: this does the first hour of triage on a support "
-         "ticket — the part that is mechanical — and hands an engineer a "
-         "starting point with evidence attached. It never changes anything.")
+notes(s, "It does the mechanical first hour of a support ticket and hands an "
+         "engineer a starting point with the evidence attached. It never "
+         "changes anything.")
 
-# ============================================================ 2 · problem
-s = slide("First-pass triage is mechanical, and it is expensive", "The problem")
-bullets(s, [
-    ("Every ticket starts the same way",
-     "Read the ticket. Work out which service. Find the right app name in New "
-     "Relic. Write the query. Read the code. Most of that is lookup, not "
-     "judgement."),
-    ("The context is scattered across three systems",
-     "Jira has the report, New Relic has the behaviour, GitHub has the cause. "
-     "Correlating them by hand is where the time goes."),
-    ("Knowledge leaves with whoever fixed it",
-     "The cause lands in a comment thread, not a runbook. The next person with "
-     "the same symptom starts from zero."),
-    ("The cost is the engineer's attention, not the ticket",
-     "An interrupted engineer pays far more than the ten minutes the lookup "
-     "took."),
-])
-notes(s, "Frame it as lookup versus judgement. We are not trying to replace the "
-         "diagnosis — we are trying to delete the lookup that precedes it, and "
-         "to stop losing what we learn.")
-
-# ============================================================ 3 · what it does
+# ============================================================ 2 · what it does
 s = slide("Give it a ticket key; it does the first pass", "What it does")
 steps = [
-    ("1", "Reads the ticket", "Description, comments, and any attached log files. "
-     "Pulls out ids, timestamps and error signatures in code, not in the model."),
-    ("2", "Investigates", "Discovers the real New Relic app names, queries errors "
-     "and logs over the ticket's own time window, then reads the service code on "
-     "GitHub to explain what it found."),
-    ("3", "Writes it up", "A plain-English summary, a recommended fix, a checklist, "
-     "and every query it ran — posted as one Jira comment, on approval."),
+    ("1", "Reads the ticket",
+     "Description, comments and attached logs. Pulls out ids, timestamps and "
+     "error signatures."),
+    ("2", "Investigates",
+     "Finds the real New Relic app names, queries errors and logs over the "
+     "ticket's own window, then reads the service code on GitHub."),
+    ("3", "Writes it up",
+     "Plain-English summary, a recommended fix, and every query it ran — as "
+     "one Jira comment."),
 ]
 x = L
 cw = (CW - Inches(0.5)) / 3
-for num, head, body in steps:
-    panel(s, x, Inches(1.75), cw, Inches(3.5))
-    tf = tb(s, x + Inches(0.3), Inches(2.0), cw - Inches(0.6), Inches(3.0))
+for num, head_, body_ in steps:
+    panel(s, x, Inches(1.85), cw, Inches(3.3))
+    tf = tb(s, x + Inches(0.3), Inches(2.1), cw - Inches(0.6), Inches(2.8))
     put(tf, num, size=15, bold=True, color=BLUE, first=True, space_after=8)
-    put(tf, head, size=20, bold=True, space_after=9)
-    put(tf, body, size=14, color=SEC, space_after=0, line=1.3)
+    put(tf, head_, size=21, bold=True, space_after=9)
+    put(tf, body_, size=14.5, color=SEC, space_after=0, line=1.3)
     x += cw + Inches(0.25)
-tf = tb(s, L, Inches(5.6), CW, Inches(0.9))
-put(tf, "Typical run: 2–4 minutes, 50–65 tool calls, $0.50–$0.80 of model time.",
-    size=16, bold=True, first=True, space_after=4)
-put(tf, "Bounded three ways at once — turns, dollars, and tool calls — so a "
-        "confused run stops rather than spirals.", size=14, color=SEC,
-    space_after=0)
-notes(s, "The three columns map exactly to the four phases in the architecture "
-         "slide; intake and the gate are collapsed into step 1 here.")
+tf = tb(s, L, Inches(5.55), CW, Inches(0.8))
+put(tf, "2–4 minutes  ·  about $0.65 of model time  ·  posts only on approval",
+    size=17, bold=True, first=True, space_after=4)
+put(tf, "Bounded on turns, dollars and tool calls at once, so a confused run "
+        "stops rather than spirals.", size=14, color=SEC, space_after=0)
+notes(s, "Three columns map to the four phases on the next slide — intake and "
+         "the gate are collapsed into step 1 here.")
 
-# ============================================================ 4 · architecture
+# ============================================================ 3 · architecture
 s = slide("How it is put together", "Architecture")
 img = OUT / "architecture.png"
 if img.exists():
@@ -220,254 +202,65 @@ if img.exists():
     avail_h = H - top - Inches(0.34)
     pic_w = min(CW, Emu(int(avail_h * 16 / 9)))     # source is 16:9
     s.shapes.add_picture(str(img), Emu(int((W - pic_w) / 2)), top, width=pic_w)
-notes(s, "Everything blue is ordinary deterministic code we unit-test. The one "
-         "amber box is the only place a model makes a decision, and it is "
-         "wrapped in the red guardrail strip. Read-only sources along the "
-         "bottom; the single write — one Jira comment — on the right.")
+notes(s, "Blue is ordinary deterministic code we unit-test. The one amber box "
+         "is the only place a model decides anything, and it is wrapped in the "
+         "red guardrail strip. Read-only sources along the bottom; the single "
+         "write — one Jira comment — on the right.")
 
-# ============================================================ 5 · method
-s = slide("The method it is made to follow", "How it investigates")
-bullets(s, [
-    ("1 · Do not adopt anyone's conclusion",
-     "Ticket comments and prior tickets are labelled as unverified claims. They "
-     "decide what to look for, never what to believe."),
-    ("2 · Discover before filtering",
-     "Repo name, service name and New Relic app name are all different. A guessed "
-     "app name returns zero rows that look exactly like 'nothing is broken'."),
-    ("3 · Find the failure signature",
-     "Errors and logs over the ticket's own window, down to an exception class and "
-     "ideally a trace id."),
-    ("4 · Explain it in the code",
-     "Search for the literal log message, then blame and PR history for the line "
-     "that produced it."),
-    ("5 · Converge, or stop and say so",
-     "A root cause only when logs, data and code agree. Otherwise it reports what "
-     "it narrowed down — which is a good outcome, not a failure."),
-], size=16, gap=11)
-notes(s, "Step 1 is the one that took the most work. Left neutral, a confident "
-         "ticket comment becomes the model's answer and the whole run turns "
-         "into a paraphrase of what someone already wrote.")
-
-# ============================================================ 6 · the comment
+# ============================================================ 4 · the output
 s = slide("What lands on the ticket", "The output")
 left = [
-    ("Summary", "Four or five plain sentences. No file paths, no class names — "
-     "written for whoever decides whether to escalate."),
-    ("Recommended fix", "The change, where to make it, how to confirm it worked, "
-     "and any interim workaround."),
-    ("Checklist", "Tickable items: what triage established, the fix, and at least "
-     "one prevention item."),
+    ("Summary", "Four or five plain sentences. No file paths, no class names."),
+    ("Recommended fix", "The change, where to make it, how to confirm it worked."),
+    ("Checklist", "What triage established, the fix, and how to prevent a repeat."),
 ]
 right = [
-    ("Read this before acting on it", "Any confidence the system reduced, and why "
-     "it reduced it."),
-    ("Technical detail & evidence", "Root cause, code location, and each claim "
-     "tied to the query or file that produced it."),
-    ("Queries run · logs checked", "Every query in full, so anyone can re-run it. "
-     "Plus what log searches were tried and what they returned."),
+    ("Evidence", "Every claim tied to the query or file that produced it."),
+    ("Queries run · logs checked", "In full, so anyone can re-run them."),
+    ("Confidence, checked", "Capped against what the run actually verified — "
+     "and any downgrade is printed, not hidden."),
 ]
 for col, items in ((L, left), (L + CW / 2 + Inches(0.2), right)):
-    tf = tb(s, col, Inches(1.68), CW / 2 - Inches(0.2), Inches(4.4))
-    for i, (head, body) in enumerate(items):
-        put(tf, head, size=17, bold=True, first=(i == 0), space_after=3)
-        put(tf, body, size=13.5, color=SEC, space_after=14, line=1.28)
-panel(s, L, Inches(5.85), CW, Inches(0.95), fill=RGBColor(0xFD, 0xF7, 0xE9),
+    tf = tb(s, col, Inches(1.8), CW / 2 - Inches(0.2), Inches(3.6))
+    for i, (h_, b_) in enumerate(items):
+        put(tf, h_, size=18, bold=True, first=(i == 0), space_after=3)
+        put(tf, b_, size=14, color=SEC, space_after=18, line=1.3)
+panel(s, L, Inches(5.5), CW, Inches(1.1), fill=RGBColor(0xFD, 0xF7, 0xE9),
       border=AMBER)
-tf = tb(s, L + Inches(0.3), Inches(6.06), CW - Inches(0.6), Inches(0.6))
-put(tf, "Ordered widest-reader-first: a support lead gets the whole picture "
-        "before reaching anything with a file path in it.",
-    size=14.5, bold=True, first=True, space_after=0)
-notes(s, "Two audiences, one comment. The top half is for a support lead or PM; "
-         "the bottom half is for the engineer who picks it up.")
+tf = tb(s, L + Inches(0.32), Inches(5.78), CW - Inches(0.64), Inches(0.7))
+put(tf, "Written for two readers at once: a support lead gets the whole "
+        "picture before reaching anything with a file path in it.",
+    size=15, bold=True, first=True, space_after=0)
+notes(s, "The top of the comment is for a support lead or PM deciding whether "
+         "to escalate; the technical detail underneath is for the engineer who "
+         "picks it up.")
 
-# ============================================================ 7 · guardrails
+# ============================================================ 5 · guardrails
 s = slide("What it cannot do", "Trust boundaries")
 bullets(s, [
     ("It cannot change anything",
-     "No writes, no shell, no file edits, no ticket transitions. Denied at the "
-     "hook on every single tool call, not by asking the model nicely."),
+     "No writes, no shell, no file edits, no ticket transitions — denied on "
+     "every tool call, not by asking the model nicely."),
     ("The clients have no write methods",
-     "The security boundary is the code, not the prompt. There is no function to "
-     "call that would modify New Relic or GitHub."),
+     "The boundary is the code, not the prompt. There is no function to call "
+     "that would modify New Relic or GitHub."),
     ("One side effect exists",
-     "A Jira comment — and only after --post on the command line or a human "
-     "clicking Approve in the review UI."),
-    ("Personal data never reaches the model",
-     "Emails and card numbers are replaced with stable placeholders on the way "
-     "in and restored on the way out."),
-], size=16.5, gap=13, width=Inches(8.2))
-x = L + Inches(8.6)
-stat(s, x, Inches(1.75), Inches(3.15), "60", "tool-call budget per run",
-     "then it must write up what it has", h=Inches(1.7))
-stat(s, x, Inches(3.6), Inches(3.15), "95", "automated tests",
-     "guardrails, query repair, rendering", h=Inches(1.7))
-stat(s, x, Inches(5.45), Inches(3.15), "0", "writes to production",
-     "by construction, not by policy", h=Inches(1.7))
-notes(s, "The question this slide answers is 'what happens when it is wrong?' — "
-         "and the answer is that a wrong comment costs a minute of reading. "
-         "There is no path to a wrong write.")
-
-# ============================================================ 8 · honesty
-s = slide("Confidence is checked, not taken on trust", "Why you can believe it")
-bullets(s, [
-    ("The model declares what it actually verified",
-     "Logs, code, data — confirmed, checked-and-empty, or never checked."),
-    ("That claim is cross-checked against the run trace",
-     "If it says it confirmed the logs but no log query returned a line, the "
-     "report is downgraded automatically."),
-    ("A report built only on ticket comments cannot claim a root cause",
-     "It is reduced to 'narrowed, not confirmed' at low confidence — because a "
-     "paraphrase of the ticket is not a diagnosis."),
-    ("Every downgrade is printed in the comment",
-     "Never applied silently. The reader sees the reduction and the reason for "
-     "it, so a hedged report is the system working."),
-], size=16.5, gap=13)
-notes(s, "This is the slide that matters for adoption. The failure mode people "
-         "fear is a confident wrong answer sending someone down the wrong path "
-         "at 2am. We cap confidence mechanically so that cannot happen quietly.")
-
-# ============================================================ 9 · hardening
-s = slide("What hardening found", "Measured against 11 recorded runs")
-tf = tb(s, L, Inches(1.6), CW, Inches(0.5))
-put(tf, "The first build looked like it worked. Reading the run traces rather "
-        "than the output told a different story.", size=15.5, color=SEC,
-    first=True, space_after=0)
+     "A Jira comment, and only after a human clicks Approve."),
+], y=Inches(1.8), size=18, gap=16)
 row = [
-    ("3 of 4", "observability tools silently broken",
-     "failed on every run, returning nothing"),
-    ("65%", "of data queries returned zero rows",
-     "guessed app names, read as 'no errors'"),
-    ("29 → 4", "log queries that returned a line",
-     "logs were never really searched"),
-    ("14", "queries lost to one NRQL mistake",
-     "valid SQL, invalid NRQL — now auto-repaired"),
+    ("13", "read-only tools"),
+    ("95", "automated tests"),
+    ("0", "writes to production"),
+    ("1", "click to publish"),
 ]
 x = L
 cw = (CW - Inches(0.6)) / 4
-for v, lab, sub in row:
-    stat(s, x, Inches(2.35), cw, v, lab, sub, h=Inches(2.0))
+for v, lab in row:
+    stat(s, x, Inches(5.05), cw, v, lab, h=Inches(1.5))
     x += cw + Inches(0.2)
-panel(s, L, Inches(4.6), CW, Inches(1.55), fill=RGBColor(0xFD, 0xF7, 0xE9),
-      border=AMBER)
-tf = tb(s, L + Inches(0.32), Inches(4.82), CW - Inches(0.64), Inches(1.2))
-put(tf, "The lesson we kept relearning", size=15, bold=True, first=True,
-    space_after=5)
-put(tf, "None of this was visible in the reports. The agent wrote confident "
-        "prose either way — it simply had nothing underneath it. Everything we "
-        "now check automatically came from reading traces, not read-throughs.",
-    size=14, color=SEC, space_after=0, line=1.3)
-notes(s, "Be candid here. The point is not that it was broken; it is that a "
-         "plausible-sounding report is not evidence of a working system, which "
-         "is exactly why the confidence checks and the evidence appendix exist.")
-
-# ============================================================ 10 · now
-s = slide("Where it stands now", "Current state")
-row = [
-    ("13", "read-only tools", "discovery, telemetry, code, history"),
-    ("~$0.65", "median cost per ticket", "2–4 minutes end to end"),
-    ("95", "tests passing", "every fix has a regression test"),
-    ("1", "action needed to publish", "a human clicking Approve"),
-]
-x = L
-cw = (CW - Inches(0.6)) / 4
-for v, lab, sub in row:
-    stat(s, x, Inches(1.75), cw, v, lab, sub, h=Inches(2.0))
-    x += cw + Inches(0.2)
-bullets(s, [
-    ("Investigation now leads with telemetry, not code archaeology",
-     "A representative recent run made 27 New Relic queries against 4 GitHub "
-     "calls — the reverse of where it started."),
-    ("Queries are published in full",
-     "Both as a deep link and as copy-pasteable text, so a claim can always be "
-     "checked independently."),
-    ("Every run leaves a prevention document behind",
-     "Written whether or not the cause was a code bug."),
-], y=Inches(4.0), size=16, gap=12)
-notes(s, "The 27-versus-4 figure is the one to say out loud: it is the clearest "
-         "single indicator that it is investigating rather than guessing from "
-         "source code.")
-
-# ============================================================ 11 · prevention
-s = slide("Every run leaves something behind", "Preventing the repeat")
-bullets(s, [
-    ("Was this a code bug — yes, no, or not established",
-     "'No' is a real answer. A misconfiguration the code permits by design is "
-     "the one most likely to recur unrecorded."),
-    ("What to change so the class of failure goes away",
-     "Not just today's instance of it."),
-    ("How we would catch it next time",
-     "The specific test, alert or dashboard — with the condition and the "
-     "threshold, not 'add monitoring'."),
-    ("A paste-able runbook entry",
-     "The symptom as it presents, and the first thing to check. Written for "
-     "whoever picks up the next ticket that looks like this one."),
-], size=16.5, gap=13, width=Inches(8.4))
-panel(s, L + Inches(8.8), Inches(1.75), Inches(2.95), Inches(3.9))
-tf = tb(s, L + Inches(9.05), Inches(2.0), Inches(2.45), Inches(3.4))
-put(tf, "Saved per run", size=12, bold=True, color=BLUE, first=True,
-    space_after=10)
-for path, desc in [
-    (".runs/prevention/", "the document"),
-    (".runs/*.json", "every query, for audit"),
-    ("Jira comment", "the summary and the fix"),
-]:
-    put(tf, path, size=13, bold=True, mono=True, space_after=2)
-    put(tf, desc, size=12, color=SEC, space_after=12)
-notes(s, "This is the compounding part. One triage saves an hour; a year of "
-         "prevention notes changes how fast the team recognises a repeat.")
-
-# ============================================================ 12 · rollout
-s = slide("How we roll it out", "Plan")
-phases = [
-    ("Now", "Dry run", "Run it against already-resolved tickets and compare its "
-     "verdict to the real cause. Nothing posts."),
-    ("Next", "Human-approved", "Support runs it from the review UI. A person "
-     "reads every comment before it goes on a ticket."),
-    ("Then", "Labelled subset", "Webhook triage for tickets carrying one label, "
-     "so we widen by ticket type rather than all at once."),
-    ("Later", "Default first pass", "Only once the false-cause rate is low "
-     "enough that reading the comment beats ignoring it."),
-]
-x = L
-cw = (CW - Inches(0.75)) / 4
-for i, (when, title, body) in enumerate(phases):
-    accent = BLUE if i < 2 else LINE
-    panel(s, x, Inches(1.85), cw, Inches(3.1))
-    rule(s, x + Inches(0.22), Inches(2.1), Inches(0.45), accent, Pt(3))
-    tf = tb(s, x + Inches(0.22), Inches(2.3), cw - Inches(0.44), Inches(2.6))
-    put(tf, when.upper(), size=11.5, bold=True, color=BLUE if i < 2 else MUT,
-        first=True, space_after=6)
-    put(tf, title, size=19, bold=True, space_after=8)
-    put(tf, body, size=13.5, color=SEC, space_after=0, line=1.3)
-    x += cw + Inches(0.25)
-tf = tb(s, L, Inches(5.35), CW, Inches(1.0))
-put(tf, "The gate between each step is the same question:", size=15, bold=True,
-    first=True, space_after=4)
-put(tf, "on recently resolved tickets, how often does it name the cause an "
-        "engineer would have named? We widen when that number earns it — not on "
-        "a date.", size=14.5, color=SEC, space_after=0, line=1.3)
-notes(s, "Resist a date-driven rollout. The measure is agreement with known "
-         "causes on resolved tickets, and we should be willing to stay at "
-         "human-approved indefinitely if that is what the number says.")
-
-# ============================================================ 13 · asks
-s = slide("What we need next", "Next steps")
-bullets(s, [
-    ("A calibration set — 20 to 30 resolved tickets",
-     "With their real root causes, so we can measure agreement instead of "
-     "guessing at it. This is the single highest-value thing we can be given."),
-    ("Service ownership in the playbook",
-     "App names, repos and owning channel per service. Most remaining mistakes "
-     "are the agent not knowing our estate, not the agent reasoning badly."),
-    ("Confirmation that log forwarding is what we think it is",
-     "Log searches come back empty far more often than they should. That may be "
-     "a data-availability problem rather than a quiet system."),
-    ("A decision on scope",
-     "Which ticket types we point it at first."),
-], size=16.5, gap=14)
-notes(s, "Close on the calibration set. Without resolved tickets to measure "
-         "against, every claim about accuracy on this deck is an anecdote, "
-         "including the good ones.")
+notes(s, "The question this answers is 'what happens when it is wrong?' — a "
+         "wrong comment costs a minute of reading. There is no path to a wrong "
+         "write.")
 
 prs.save(DECK)
-print(f"wrote {DECK}  ({DECK.stat().st_size:,} bytes, {len(prs.slides.__iter__.__self__._sldIdLst)} slides)")
+print(f"wrote {DECK}  ({DECK.stat().st_size:,} bytes, {len(prs.slides._sldIdLst)} slides)")
