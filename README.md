@@ -14,12 +14,16 @@ It never mutates anything. The output is a structured report posted as a Jira
 comment for a human to accept, correct, or reject.
 
 > **Just want to run it?** See **[RUNNING.md](RUNNING.md)** — setup, commands,
-> reading the output, and troubleshooting. This README covers the design
-> reasoning behind it.
+> reading the output, and troubleshooting.
+> **Want the structure?** See **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+> This README covers the design reasoning behind it.
 
 ---
 
 ## Architecture
+
+Full diagrams — module map, phase-by-phase flow, trust boundaries — are in
+**[ARCHITECTURE.md](ARCHITECTURE.md)**. The sketch below is the short version.
 
 ```
 Jira webhook / CLI
@@ -46,6 +50,8 @@ Jira webhook / CLI
 │   │   before you filter)        └ Glob                  │
 │   ├ nr_find_errors               (only when a repo is   │
 │   ├ nr_query                      cloned locally)       │
+│   ├ nr_logs  (probes which                              │
+│   │   attribute identifies logs)                        │
 │   ├ nr_trace                                            │
 │   ├ db_catalog / db_template / db_query  (disabled)     │
 │   ├ jira_related_tickets                                │
@@ -81,7 +87,9 @@ src/triage/
   tools.py           the agent's tool surface (in-process MCP server)
   guardrails.py      PreToolUse hooks: no writes, no path escape, budget cap
   trace.py           append-only audit log → Jira evidence table
-  schema.py          report JSON schema + markdown renderer
+  schema.py          report schema, confidence validator, markdown renderer
+  prevention.py      builds the prevention document from the report
+  simplify.py        tool-free second pass: plain prose for the UI
   agent.py           orchestration
   cli.py             `triage EPS-1234`
   clients/
@@ -92,8 +100,10 @@ src/triage/
 config/playbooks/
   eps.yaml           ← your domain knowledge lives here
 prompts/system.md    the triage method
+service/ui.py        local approval UI (run, review, approve)
 service/webhook.py   Jira webhook → background triage
-tests/test_safety.py guardrails + extraction (the parts that must be exact)
+tests/test_safety.py guardrails, NRQL repair, report rendering, ADF
+tests/test_ui.py     the approve/reject path
 ```
 
 ---
@@ -109,9 +119,15 @@ The things that will cost you an afternoon each if you don't know them.
 - Read through **API v2**, not v3. v3 returns the description as an Atlassian
   Document Format tree you'd have to walk; v2 returns plain wiki markup that
   goes straight into a prompt.
-- Write through **API v3** — comments must be ADF. `clients/jira.py::_to_adf`
-  is a minimal Markdown→ADF converter (paragraphs + code blocks), which is all
-  the report needs.
+- Write through **API v3** — comments must be ADF, and ADF has no markdown
+  parser, so anything not converted arrives as literal punctuation.
+  `clients/jira.py::_to_adf` handles headings, bold/italic/inline-code/links,
+  bullet and ordered lists, fenced code, rules, pipe tables, and task lists
+  (which render as real tickable checkboxes).
+- A comment over **32,767 characters** is rejected with
+  `CONTENT_LIMIT_EXCEEDED` and *nothing* is posted. `render_markdown` fits the
+  body to a budget measured against ADF, which serialises to roughly 1.8x the
+  markdown, and sacrifices the evidence appendix before the diagnosis.
 - Attached `.log`/`.txt` files are usually the richest signal in the whole
   ticket. Fetch them via the attachment `content` URL with the same auth.
 
