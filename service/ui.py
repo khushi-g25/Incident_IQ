@@ -24,8 +24,8 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from triage.agent import LOG_SINK, triage
-from triage.clients.jira import JiraClient
-from triage.config import Settings
+from triage.clients.jira import JiraClient, JiraCommentError
+from triage.config import REPO_ROOT, Settings
 from triage.simplify import _strip_markdown, simplify
 
 log = logging.getLogger("triage.ui")
@@ -33,7 +33,34 @@ log = logging.getLogger("triage.ui")
 _TICKET_RE = re.compile(r"([A-Z][A-Z0-9]+-\d+)")
 
 # run_id -> {ticket, markdown, report} — resolved runs awaiting approve/reject.
+#
+# Mirrored to disk. This process runs with --reload, so any file save restarts
+# the worker; holding pending approvals only in memory meant a report you were
+# about to approve vanished, and Approve answered "unknown run_id".
 _RUNS: dict[str, dict[str, Any]] = {}
+_PENDING_DIR = REPO_ROOT / ".runs" / "pending"
+
+
+def _remember(run_id: str, data: dict[str, Any]) -> None:
+    _RUNS[run_id] = data
+    try:
+        _PENDING_DIR.mkdir(parents=True, exist_ok=True)
+        (_PENDING_DIR / f"{run_id}.json").write_text(json.dumps(data))
+    except OSError:
+        log.warning("could not persist pending run %s", run_id, exc_info=True)
+
+
+def _recall(run_id: str) -> dict[str, Any] | None:
+    """Pop from memory, falling back to the on-disk copy after a reload."""
+    data = _RUNS.pop(run_id, None)
+    path = _PENDING_DIR / f"{run_id}.json"
+    if data is None and path.is_file():
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            data = None
+    path.unlink(missing_ok=True)
+    return data
 
 # request_id -> {status, logs, result} — one entry per /api/run call, polled
 # by /api/stream while the agent is working.
@@ -90,11 +117,11 @@ async def _run_job(request_id: str, ticket: str, extra_prompt: str | None) -> No
             logs.append("building plain-English summary ...")
             summary = await simplify(outcome.report, settings)
 
-        _RUNS[outcome.run_id] = {
+        _remember(outcome.run_id, {
             "ticket": ticket,
             "markdown": outcome.markdown,
             "report": outcome.report,
-        }
+        })
         job["result"] = {
             "run_id": outcome.run_id,
             "ticket": ticket,
@@ -105,6 +132,8 @@ async def _run_job(request_id: str, ticket: str, extra_prompt: str | None) -> No
             # this the UI had nothing to show under "Full report".
             "markdown": outcome.markdown,
             "report": outcome.report,
+            "prevention_doc": outcome.prevention_doc,
+            "prevention_path": str(outcome.prevention_path) if outcome.prevention_path else None,
             "cost_usd": outcome.cost_usd,
             "skipped_reason": outcome.skipped_reason,
         }
@@ -141,18 +170,30 @@ async def stream(request_id: str) -> StreamingResponse:
 
 @app.post("/api/approve/{run_id}")
 async def approve(run_id: str) -> dict[str, Any]:
-    run_data = _RUNS.pop(run_id, None)
+    run_data = _recall(run_id)
     if run_data is None:
         raise HTTPException(404, "Unknown or already-resolved run_id")
     settings: Settings = app.state.settings
     jira = JiraClient(settings.jira)
-    comment_id = jira.add_comment(run_data["ticket"], run_data["markdown"])
-    return {"status": "posted", "ticket": run_data["ticket"], "comment_id": comment_id}
+    try:
+        comment_id = jira.add_comment(run_data["ticket"], run_data["markdown"])
+    except Exception as e:  # noqa: BLE001 - reported verbatim to the operator
+        # Keep the report available so the operator can retry after fixing
+        # credentials or permissions, rather than losing it to a failed click.
+        _remember(run_id, run_data)
+        log.exception("posting to %s failed", run_data["ticket"])
+        raise HTTPException(502, f"Could not post to Jira: {e}") from e
+    return {
+        "status": "posted",
+        "ticket": run_data["ticket"],
+        "comment_id": comment_id,
+        "browse_url": f"{settings.jira.base_url}/browse/{run_data['ticket']}",
+    }
 
 
 @app.post("/api/reject/{run_id}")
 async def reject(run_id: str) -> dict[str, Any]:
-    if _RUNS.pop(run_id, None) is None:
+    if _recall(run_id) is None:
         raise HTTPException(404, "Unknown or already-resolved run_id")
     return {"status": "discarded"}
 
@@ -203,6 +244,9 @@ _PAGE = r"""<!doctype html>
   #summary p { margin: 0 0 12px 0; }
   #summary p:last-child { margin-bottom: 0; }
   #status { margin-top: 14px; font-weight: 600; }
+  #status.ok { color: #1a7f37; }
+  #status.err { color: #cf222e; font-weight: 500; line-height: 1.5; }
+  #status a { margin-left: 6px; }
   #meta { font-size: 12.5px; color: #777; margin-top: 6px; }
   details { margin-top: 14px; }
   summary { cursor: pointer; font-size: 13px; color: #57606a; }
@@ -262,6 +306,8 @@ _PAGE = r"""<!doctype html>
     margin-right: 6px;
   }
   #fixSection { display: none; }
+  #preventionSection { display: none; }
+  .path { font-weight: 400; text-transform: none; letter-spacing: 0; color: #8a8f96; font-size: 11.5px; }
   #progress { display: none; margin-top: 4px; }
   #logBox {
     background: #0d1117; color: #c9d1d9; font-family: ui-monospace, SFMono-Regular, monospace;
@@ -308,6 +354,16 @@ _PAGE = r"""<!doctype html>
     </div>
     <div id="status"></div>
     <div id="meta"></div>
+
+    <div id="preventionSection">
+      <h4 class="section-title">Prevention notes
+        <span id="preventionPath" class="path"></span>
+      </h4>
+      <details>
+        <summary>Open the prevention document</summary>
+        <div id="preventionDoc" class="report"></div>
+      </details>
+    </div>
 
     <h4 class="section-title">Comment that will be posted</h4>
     <div id="fullReport" class="report"></div>
@@ -582,6 +638,11 @@ function showResult(data) {
   badge.className = 'badge verdict-' + (data.verdict || 'none');
   renderSummary(data.summary);
   renderFix(data.report);
+  const prevDoc = data.prevention_doc || '';
+  document.getElementById('preventionSection').style.display = prevDoc ? 'block' : 'none';
+  document.getElementById('preventionDoc').innerHTML = renderMarkdown(prevDoc);
+  document.getElementById('preventionPath').textContent =
+    data.prevention_path ? '— saved to ' + data.prevention_path : '';
   document.getElementById('rawMarkdown').textContent = data.markdown || '';
   document.getElementById('fullReport').innerHTML = renderMarkdown(data.markdown || '');
   document.getElementById('status').textContent = '';
@@ -600,15 +661,46 @@ function showResult(data) {
 
 async function decide(action) {
   if (!currentRunId) return;
-  const r = await fetch('/api/' + action + '/' + currentRunId, {method: 'POST'});
-  const data = await r.json();
   const status = document.getElementById('status');
-  if (!r.ok) { status.textContent = 'Error: ' + (data.detail || 'failed'); return; }
+  const approveBtn = document.getElementById('approveBtn');
+  const rejectBtn = document.getElementById('rejectBtn');
+
+  approveBtn.disabled = true;
+  rejectBtn.disabled = true;
+  status.className = '';
+  status.textContent = action === 'approve' ? 'Posting to Jira ...' : 'Discarding ...';
+
+  let r, data;
+  try {
+    r = await fetch('/api/' + action + '/' + currentRunId, {method: 'POST'});
+    data = await r.json().catch(() => ({}));
+  } catch (e) {
+    status.className = 'err';
+    status.textContent = 'Request failed: ' + e + ' — is the server still running?';
+    approveBtn.disabled = false; rejectBtn.disabled = false;
+    return;
+  }
+
+  if (!r.ok) {
+    // The report is kept server-side on a failed post, so retrying is safe.
+    status.className = 'err';
+    status.textContent = (data.detail || ('Failed with HTTP ' + r.status));
+    approveBtn.disabled = false;
+    rejectBtn.disabled = false;
+    return;
+  }
+
+  status.className = 'ok';
   status.textContent = action === 'approve'
-    ? 'Posted to Jira (comment ' + data.comment_id + ').'
+    ? 'Posted to Jira as comment ' + data.comment_id + '.'
     : 'Discarded — nothing posted.';
-  document.getElementById('approveBtn').disabled = true;
-  document.getElementById('rejectBtn').disabled = true;
+  if (action === 'approve' && data.browse_url) {
+    const a = document.createElement('a');
+    a.href = data.browse_url; a.target = '_blank'; a.rel = 'noopener';
+    a.textContent = ' View on Jira';
+    status.appendChild(a);
+  }
+  currentRunId = null;
 }
 </script>
 </body>

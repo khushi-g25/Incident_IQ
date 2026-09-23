@@ -195,6 +195,24 @@ or five short sentences, one paragraph, covering what broke, who it affected,
 why, and what happens next. Many readers stop here, so it has to stand alone —
 but keep it tight; the fields below it carry the detail.
 
+**`plain_language.solution_summary` closes the comment.** One or two sentences
+naming the solution in plain words, so a reader who skipped everything else
+still finishes knowing what is going to be done.
+
+**`prevention` is written up as a separate document on every run**, whether or
+not the cause was a code bug — so answer it even when the answer is "nothing in
+the code needs to change".
+
+- `is_code_bug`: `no` is a perfectly good answer for a misconfiguration, a data
+  problem or a request that was simply wrong. Say so plainly.
+- `what_to_change`: the change that removes this *class* of failure, not just
+  today's instance of it.
+- `how_to_detect_next_time`: the test, alert or dashboard that would have caught
+  it first, with the actual condition and threshold.
+- `runbook_entry`: a short paste-able entry — the symptom as it presents, and
+  the first thing to check. Write it for whoever picks up the next ticket that
+  looks like this one.
+
 **The `checklist` turns the finding into something trackable.** Three kinds of
 item, at minimum one of each:
 

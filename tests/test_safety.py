@@ -263,6 +263,14 @@ BASE_REPORT = {
         "customer_impact": "b",
         "why_it_happened": "c",
         "what_we_recommend": "d",
+        "solution_summary": "Pass the campaign settings through so defaults stop being used.",
+    },
+    "prevention": {
+        "is_code_bug": "yes",
+        "category": "missing_validation",
+        "what_to_change": "Validate the options hash before building the query.",
+        "how_to_detect_next_time": "Alert when audience size exceeds the campaign list by 10x.",
+        "runbook_entry": "Symptom: campaign reaches far more users than listed. Check the options hash first.",
     },
     "checklist": [
         {"item": "Confirmed the failure in New Relic", "status": "done",
@@ -518,6 +526,49 @@ def test_checklist_arriving_as_a_string_is_recovered() -> None:
     })
     assert isinstance(r["checklist"], list)
     assert r["checklist"][0]["item"] == "x"
+
+
+def test_solution_summary_closes_the_comment() -> None:
+    md = render_markdown(dict(BASE_REPORT), "t", "r")
+    assert "### In short" in md
+    assert "Pass the campaign settings through" in md
+    # It closes: nothing but the evidence appendix comes after it.
+    assert md.index("### In short") > md.index("### Recommended fix")
+    assert md.index("### In short") < md.index("### Queries run")
+
+
+def test_prevention_block_states_whether_it_was_a_code_bug() -> None:
+    md = render_markdown(dict(BASE_REPORT), "t", "r")
+    assert "### Preventing a repeat" in md
+    assert "Was this a code bug?" in md
+    assert "Yes — a defect in the source code" in md
+    assert "missing validation" in md
+
+
+def test_logs_checked_section_is_appended() -> None:
+    t = RunTrace(ticket="SQ-1")
+    t.add("nr_query", {"nrql": "SELECT * FROM Log WHERE appName='x' SINCE 1 day ago"},
+          result_summary="0 rows")
+    md = render_markdown(dict(BASE_REPORT), "t", "r", logs_md=t.logs_checked_markdown())
+    assert "### Logs checked" in md
+    assert "Every log search came back empty" in md
+
+
+def test_logs_checked_reports_when_no_search_ran() -> None:
+    out = RunTrace(ticket="SQ-1").logs_checked_markdown()
+    assert "No log search was run" in out
+
+
+def test_logs_checked_lists_each_filter_and_hit_count() -> None:
+    t = RunTrace(ticket="SQ-1")
+    t.add("nr_query",
+          {"nrql": "SELECT * FROM Log WHERE appName='api' SINCE 1 day ago LIMIT 10"},
+          result_summary="12 rows")
+    out = t.logs_checked_markdown()
+    assert "appName='api'" in out
+    assert "12 rows" in out
+    assert "SINCE" not in out          # window/limit stripped from the filter cell
+    assert "came back empty" not in out
 
 
 def test_suggested_fix_is_required_by_the_schema() -> None:
@@ -778,6 +829,17 @@ def test_pipes_in_a_query_do_not_break_the_evidence_table() -> None:
 def test_permalink_carries_the_account_context() -> None:
     """Without platform[accountId] the query builder opens with no account
     selected and runs nothing, which reads as a broken link."""
-    link = NewRelicClient(NR_CFG).permalink("SELECT count(*) FROM Log SINCE 1 day ago")
+    import base64
+    from urllib.parse import parse_qs, urlparse
+
+    nrql = "SELECT count(*) FROM Log WHERE level='ERROR' SINCE 1 day ago"
+    link = NewRelicClient(NR_CFG).permalink(nrql)
     assert "platform[accountId]=1" in link
-    assert "query=SELECT%20count" in link
+
+    # The query travels in the base64 `pane`, which is how New Relic One
+    # carries nerdlet state. It must round-trip intact.
+    pane = parse_qs(urlparse(link).query)["pane"][0]
+    decoded = json.loads(base64.urlsafe_b64decode(pane + "=" * (-len(pane) % 4)))
+    assert decoded["initialNrqlValue"] == nrql
+    assert decoded["initialAccountId"] == 1
+    assert decoded["nerdletId"] == "data-exploration.query-builder"

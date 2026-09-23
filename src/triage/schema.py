@@ -22,6 +22,7 @@ REPORT_SCHEMA: dict[str, Any] = {
         "root_cause",
         "evidence",
         "blast_radius",
+        "prevention",
         "checklist",
         "unverified",
         "next_actions",
@@ -75,6 +76,7 @@ REPORT_SCHEMA: dict[str, Any] = {
                 "customer_impact",
                 "why_it_happened",
                 "what_we_recommend",
+                "solution_summary",
             ],
             "description": "The part of the comment a non-engineer reads. Write "
             "it for a support lead or product manager: complete sentences, no "
@@ -107,6 +109,17 @@ REPORT_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "description": "The proposed next step and who should own "
                     "it, in plain English.",
+                },
+                "solution_summary": {
+                    "type": "string",
+                    "maxLength": 400,
+                    "description": "One or two sentences naming the solution "
+                    "being proposed, in plain words, as a closing line for the "
+                    "comment. A reader who skipped everything else should "
+                    "finish knowing what is going to be done. Say the change "
+                    "and the effect: 'Pass the campaign's own settings into the "
+                    "audience query so it stops falling back to defaults.' If "
+                    "no fix is proposed, say what happens instead.",
                 },
             },
         },
@@ -199,6 +212,68 @@ REPORT_SCHEMA: dict[str, Any] = {
                 "measured_by": {"type": "string"},
             },
         },
+        "prevention": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "is_code_bug",
+                "category",
+                "what_to_change",
+                "how_to_detect_next_time",
+                "runbook_entry",
+            ],
+            "description": "Source material for the prevention document written "
+            "alongside every run. Answer it even when nothing was broken in the "
+            "code — 'this was a misconfiguration, here is how to spot it' is "
+            "exactly the kind of knowledge that gets lost.",
+            "properties": {
+                "is_code_bug": {
+                    "type": "string",
+                    "enum": ["yes", "no", "unclear"],
+                    "description": "Was a defect in the source code responsible? "
+                    "'no' covers configuration, data, infrastructure and "
+                    "user-error causes.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "logic_error",
+                        "missing_validation",
+                        "error_handling",
+                        "performance",
+                        "configuration",
+                        "data_quality",
+                        "infrastructure",
+                        "third_party",
+                        "user_error",
+                        "unknown",
+                    ],
+                },
+                "what_to_change": {
+                    "type": "string",
+                    "description": "The durable change that removes this class "
+                    "of failure, not just this instance of it.",
+                },
+                "how_to_detect_next_time": {
+                    "type": "string",
+                    "description": "The test, alert or dashboard that would have "
+                    "caught this before a customer did. Be specific about the "
+                    "condition and the threshold.",
+                },
+                "runbook_entry": {
+                    "type": "string",
+                    "description": "A short entry someone can paste into the "
+                    "service runbook: the symptom as it presents, and the first "
+                    "thing to check. Write it for whoever picks up the next "
+                    "ticket that looks like this one.",
+                },
+                "related_risk": {
+                    "type": "string",
+                    "description": "Anywhere else the same pattern likely "
+                    "exists, if you saw one while reading the code.",
+                },
+            },
+        },
         "checklist": {
             "type": "array",
             "minItems": 3,
@@ -277,6 +352,23 @@ _SIGNAL_LABEL = {
     "absent": "checked, nothing found",
     "not_checked": "not checked",
 }
+_CODE_BUG_LABEL = {
+    "yes": "Yes — a defect in the source code",
+    "no": "No — the code behaved as written",
+    "unclear": "Not established",
+}
+_PREVENTION_CATEGORY = {
+    "logic_error": "logic error",
+    "missing_validation": "missing validation",
+    "error_handling": "error handling",
+    "performance": "performance",
+    "configuration": "configuration",
+    "data_quality": "data quality",
+    "infrastructure": "infrastructure",
+    "third_party": "third-party dependency",
+    "user_error": "expected behaviour / user error",
+    "unknown": "not classified",
+}
 _CATEGORY_LABEL = {
     "investigation": "Investigation",
     "fix": "Fix",
@@ -292,7 +384,9 @@ _FIX_TYPE_LABEL = {
     "needs_more_investigation": "more investigation needed before a fix is clear",
 }
 
-_NESTED_FIELDS = ("root_cause", "blast_radius", "plain_language", "signals_confirmed")
+_NESTED_FIELDS = (
+    "root_cause", "blast_radius", "plain_language", "signals_confirmed", "prevention",
+)
 _LIST_FIELDS = ("evidence", "next_actions", "unverified", "checklist")
 
 
@@ -454,6 +548,7 @@ def render_markdown(
     trace_md: str,
     run_id: str,
     caveats: list[str] | None = None,
+    logs_md: str = "",
 ) -> str:
     """Report -> the Jira comment body.
 
@@ -579,10 +674,38 @@ def render_markdown(
             f"— _{a['owner_hint']}_"
         )
 
+    # ---- prevention --------------------------------------------------------
+    pv = r.get("prevention") or {}
+    if pv:
+        lines += ["", "### Preventing a repeat"]
+        lines.append(
+            f"**Was this a code bug?** {_CODE_BUG_LABEL.get(pv.get('is_code_bug'), 'Not established')}"
+            + (
+                f" ({_PREVENTION_CATEGORY[pv['category']]})"
+                if pv.get("category") in _PREVENTION_CATEGORY
+                else ""
+            )
+        )
+        if pv.get("what_to_change"):
+            lines += ["", f"**What to change.** {pv['what_to_change']}"]
+        if pv.get("how_to_detect_next_time"):
+            lines += ["", f"**How we would catch it next time.** {pv['how_to_detect_next_time']}"]
+        if pv.get("related_risk"):
+            lines += ["", f"**Where else this may exist.** {pv['related_risk']}"]
+        lines.append("")
+
+    # ---- the closing line: what is actually being proposed -----------------
+    if pl.get("solution_summary"):
+        lines += ["", "### In short", pl["solution_summary"], ""]
+
     lines += [
         "",
         "### Queries run",
         trace_md,
+        "",
+        "_If a link does not open, copy the query text into New Relic's query "
+        "builder._",
+        logs_md,
         "",
         f"_run {run_id} · generated by incident_iq · "
         "verify before acting on it_",

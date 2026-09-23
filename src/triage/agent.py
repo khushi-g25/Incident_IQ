@@ -32,6 +32,7 @@ from .clients.jira import JiraClient, JiraIssue
 from .config import REPO_ROOT, Settings
 from .extract import TicketBrief, extract_brief
 from .guardrails import build_hooks
+from .prevention import build_document, write_document
 from .redact import Redactor
 from .schema import (
     REPORT_SCHEMA,
@@ -74,6 +75,8 @@ class TriageOutcome:
     cost_usd: float
     posted_comment_id: str | None = None
     skipped_reason: str | None = None
+    prevention_doc: str | None = None
+    prevention_path: Path | None = None
 
 
 async def triage(
@@ -167,6 +170,8 @@ async def triage(
     report: dict[str, Any] | None = None
     narration: list[str] = []
     prev_tool_count = 0
+    prevention_doc: str | None = None
+    prevention_path: Path | None = None
 
     _log(f"🤖 [agent] querying {settings.agent.model} "
          f"(max_turns={settings.agent.max_turns}, budget=${settings.agent.max_budget_usd}) ...")
@@ -210,8 +215,24 @@ async def triage(
         for c in caveats:
             _log(f"⚠️  [validate] {c}")
         markdown = redactor.unscrub(
-            render_markdown(report, trace.evidence_markdown(), trace.run_id, caveats)
+            render_markdown(
+                report, trace.evidence_markdown(), trace.run_id, caveats,
+                logs_md=trace.logs_checked_markdown(),
+            )
         )
+        try:
+            doc = redactor.unscrub(
+                build_document(
+                    ticket_key, report, trace.run_id, trace.evidence_markdown()
+                )
+            )
+            prevention_path = write_document(
+                settings.run_dir, ticket_key, trace.run_id, doc
+            )
+            prevention_doc = doc
+            _log(f"📄 [prevent] wrote prevention notes to {prevention_path}")
+        except OSError:  # noqa: BLE001 - a failed write must not lose the report
+            _log("⚠️  [prevent] could not write the prevention document")
 
     should_post = (not settings.dry_run) if post is None else post
     if should_post:
@@ -232,6 +253,8 @@ async def triage(
         trace_path=trace.save(settings.run_dir),
         cost_usd=trace.cost_usd,
         posted_comment_id=comment_id,
+        prevention_doc=prevention_doc,
+        prevention_path=prevention_path,
     )
 
 

@@ -303,12 +303,26 @@ class NewRelicClient:
         published alongside this link in the evidence table, so a reader can
         always paste the query by hand if the deep link misbehaves.
         """
+        import base64
+        import json as _json
         from urllib.parse import quote
 
-        q = quote(nrql, safe="")
+        # New Relic One addresses a nerdlet by id and carries its state in a
+        # base64 `pane` parameter; `platform[accountId]` sets the account the
+        # page opens against. A bare ?query= link lands on the query builder
+        # with no account selected and runs nothing.
+        pane = {
+            "nerdletId": "data-exploration.query-builder",
+            "initialActiveInterface": "nrqlEditor",
+            "initialAccountId": self.cfg.account_id,
+            "initialNrqlValue": nrql,
+            "isViewingQuery": True,
+        }
+        encoded = base64.urlsafe_b64encode(
+            _json.dumps(pane, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
         return (
-            "https://one.newrelic.com/data-exploration/query-builder"
+            "https://one.newrelic.com/launcher/nr1-core.explorer"
             f"?platform[accountId]={self.cfg.account_id}"
-            f"&account={self.cfg.account_id}"
-            f"&query={q}"
+            f"&pane={quote(encoded, safe='')}"
         )

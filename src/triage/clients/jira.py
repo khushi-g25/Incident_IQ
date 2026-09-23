@@ -22,6 +22,23 @@ FIELDS = (
 )
 
 
+class JiraCommentError(RuntimeError):
+    """Posting failed, carrying Jira's own explanation rather than a bare 500."""
+
+
+def _chunk(text: str, size: int = 30_000) -> list[str]:
+    """ADF rejects a single enormous text node; split on paragraph boundaries."""
+    out, buf = [], ""
+    for para in text.split("\n\n"):
+        if len(buf) + len(para) + 2 > size and buf:
+            out.append(buf)
+            buf = ""
+        buf += (para + "\n\n")
+    if buf.strip():
+        out.append(buf)
+    return out or [text[:size]]
+
+
 @dataclass
 class JiraIssue:
     key: str
@@ -140,12 +157,57 @@ class JiraClient:
         return r.content[:max_bytes].decode("utf-8", errors="replace")
 
     def add_comment(self, key: str, markdown: str) -> str:
-        r = self._http.post(
-            f"/rest/api/3/issue/{key}/comment",
-            json={"body": _to_adf(markdown)},
-        )
+        """Post the report as a comment.
+
+        Two things matter here. Jira answers an ADF it dislikes with a 400 and a
+        specific reason, which must reach the operator instead of surfacing as a
+        bare 500 — and a rejected ADF must not lose the report, so a rich-format
+        failure falls back to posting the markdown as plain text.
+        """
+        try:
+            return self._post_comment(key, _to_adf(markdown))
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 400:
+                raise JiraCommentError(self._explain(e)) from e
+            fallback = {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": chunk}]}
+                    for chunk in _chunk(markdown)
+                ],
+            }
+            try:
+                return self._post_comment(key, fallback)
+            except httpx.HTTPStatusError as e2:
+                raise JiraCommentError(
+                    "Jira rejected both the formatted and the plain-text "
+                    f"comment. {self._explain(e2)}"
+                ) from e2
+
+    def _post_comment(self, key: str, body: dict[str, Any]) -> str:
+        r = self._http.post(f"/rest/api/3/issue/{key}/comment", json={"body": body})
         r.raise_for_status()
         return r.json()["id"]
+
+    @staticmethod
+    def _explain(e: httpx.HTTPStatusError) -> str:
+        """Jira puts the useful part in errorMessages/errors, not in the status."""
+        code = e.response.status_code
+        try:
+            payload = e.response.json()
+            detail = "; ".join(
+                payload.get("errorMessages", [])
+                + [f"{k}: {v}" for k, v in (payload.get("errors") or {}).items()]
+            )
+        except Exception:  # noqa: BLE001 - non-JSON error body
+            detail = (e.response.text or "")[:400]
+        hints = {
+            401: "Check JIRA_EMAIL and JIRA_API_TOKEN.",
+            403: "The account lacks permission to comment on this project.",
+            404: "Issue not found, or the account cannot see it.",
+        }
+        return f"Jira returned {code}. {detail or hints.get(code, '')}".strip()
 
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")

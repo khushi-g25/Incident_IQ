@@ -151,6 +151,45 @@ class RunTrace:
             )
         return "\n".join(lines)
 
+    def logs_checked_markdown(self) -> str:
+        """Spell out which logs were actually examined.
+
+        "No errors in the logs" means nothing without knowing which logs were
+        read, over what window, and whether the search returned anything at all.
+        """
+        log_calls = [
+            e for e in self.entries
+            if e.tool == "nr_query" and "FROM Log" in str((e.args or {}).get("nrql", ""))
+        ]
+        if not log_calls:
+            return (
+                "\n### Logs checked\n"
+                "_No log search was run, so nothing in this report is based on "
+                "log lines._"
+            )
+
+        lines = ["\n### Logs checked", "", "| # | filter | lines found |", "|---|---|---|"]
+        found_any = False
+        for i, e in enumerate(log_calls, start=1):
+            nrql = str((e.args or {}).get("nrql", ""))
+            where = nrql.split("WHERE", 1)[1] if "WHERE" in nrql else "(no filter)"
+            for clause in ("SINCE", "ORDER BY", "LIMIT", "FACET"):
+                where = where.split(clause, 1)[0]
+            summary = e.result_summary or e.error or ""
+            if summary.endswith("rows") and not summary.startswith("0 "):
+                found_any = True
+            lines.append(f"| {i} | {_cell(where.strip()[:160])} | {_cell(summary)} |")
+
+        if not found_any:
+            lines += [
+                "",
+                "**Every log search came back empty.** That is consistent with "
+                "logs not reaching this New Relic account, or not being "
+                "filterable by the attribute used — it is not by itself "
+                "evidence that nothing went wrong.",
+            ]
+        return "\n".join(lines)
+
     def save(self, run_dir: Path) -> Path:
         run_dir.mkdir(parents=True, exist_ok=True)
         path = run_dir / f"{self.ticket}-{self.run_id}.json"

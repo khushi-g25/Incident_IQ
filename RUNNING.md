@@ -72,7 +72,7 @@ Fill in `.env` — see the next section — and confirm the guardrails pass:
 pytest -q
 ```
 
-You should see **62 passed**. These are the tests that stop a model-authored
+You should see **90 passed**. These are the tests that stop a model-authored
 string from reaching production, so do not skip this step.
 
 ---
@@ -228,7 +228,13 @@ It only acts on tickets carrying the `TRIAGE_TRIGGER_LABEL` label
 
 ## 6. Reading the output
 
-Every run writes a full trace to `.runs/<TICKET>-<run_id>.json`: each tool
+Every run writes two artefacts:
+
+- `.runs/prevention/<TICKET>-<run_id>.md` — the prevention document: whether
+  this was a code bug, what to change so the class of failure goes away, how it
+  would be detected next time, and a paste-able runbook entry. Written on every
+  run, including the ones where nothing in the code was wrong.
+- `.runs/<TICKET>-<run_id>.json` — the full trace: each tool
 call, its arguments, the row count, and a New Relic permalink. When you
 disagree with a conclusion, read the trace — it shows exactly what the agent
 saw.
@@ -265,6 +271,12 @@ confident wrong root cause. Tune toward honest partial answers.
 ---
 
 ## 7. Troubleshooting
+
+**Approve does nothing / says "unknown run_id"**
+Pending approvals are mirrored to `.runs/pending/`, so they now survive the
+worker restart that `--reload` triggers on every file save. If Jira refuses the
+post, the UI shows Jira's own reason and keeps the report so you can retry once
+the cause is fixed.
 
 **Output does not reflect my prompt or schema edits**
 The UI server is holding old code. Restart it with `--reload`, or use the CLI,
