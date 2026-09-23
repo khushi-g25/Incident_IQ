@@ -583,7 +583,7 @@ def test_suggested_fix_is_required_by_the_schema() -> None:
 # the whole comment.
 
 
-def _fat_trace(calls: int = 40) -> RunTrace:
+def _fat_trace(calls: int = 40) -> RunTrace:  # noqa: D401
     t = RunTrace(ticket="SQ-1")
     for i in range(calls):
         t.add(
@@ -612,6 +612,64 @@ def test_capped_table_keeps_the_calls_that_returned_data() -> None:
     for i in range(5):
         assert f"q{i}" in md              # non-empty results survive
     assert "boom" in md                   # so do failures
+
+
+def _bloated(scale: int = 3000) -> dict:
+    """A report with every free-text field far longer than it should be."""
+    pad = "lorem ipsum dolor sit amet consectetur " * (scale // 39 + 1)
+    return {
+        **BASE_REPORT,
+        "plain_language": {**BASE_REPORT["plain_language"],
+                           "customer_impact": pad, "why_it_happened": pad,
+                           "what_we_recommend": pad},
+        "root_cause": {"explanation": pad, "component": "c",
+                       "suggested_fix": pad, "fix_verification": pad},
+        "evidence": [{"source": "new_relic", "claim": pad, "detail": pad,
+                      "query_or_path": "SELECT 1"} for _ in range(20)],
+        "blast_radius": {"described": pad},
+        "prevention": {**BASE_REPORT["prevention"], "what_to_change": pad,
+                       "how_to_detect_next_time": pad},
+        "checklist": [{"item": pad, "status": "todo", "category": "prevention"}
+                      for _ in range(12)],
+        "unverified": [pad] * 8,
+        "next_actions": [{"action": pad, "owner_hint": "#t"}] * 8,
+    }
+
+
+def test_a_huge_report_still_shows_the_summary_and_the_queries() -> None:
+    """The reported bug: on a long report the summary and the queries appendix
+    were the first things to disappear, because truncation worked backwards
+    from the end of the document and they sat at the ends."""
+    t = _fat_trace()
+    md = render_markdown(_bloated(), t.evidence_markdown(), "run1",
+                         ["a caveat " * 20] * 3,
+                         logs_md=t.logs_checked_markdown())
+    assert len(md) <= MAX_COMMENT_CHARS
+    for section in ("### Summary", "### Recommended fix", "### Evidence",
+                    "### In short", "### Logs checked", "### Queries run"):
+        assert section in md, f"{section} was dropped from a long report"
+    assert "| `nr_query` |" in md, "no query rows survived"
+    assert md.rstrip().endswith("verify before acting on it_")
+
+
+def test_dropped_sections_are_named_rather_than_vanishing() -> None:
+    t = _fat_trace()
+    md = render_markdown(_bloated(), t.evidence_markdown(), "run1", None,
+                         logs_md=t.logs_checked_markdown())
+    assert "Omitted to keep this comment readable" in md
+
+
+def test_a_normal_report_stays_short() -> None:
+    """Short is a feature, not just a limit: a 20k comment does not get read."""
+    t = _fat_trace(6)
+    md = render_markdown(dict(BASE_REPORT), t.evidence_markdown(), "run1")
+    assert len(md) < 6_000
+
+
+def test_long_free_text_fields_are_clipped_not_left_to_balloon() -> None:
+    from triage.schema import _clip
+    assert len(_clip("word " * 500)) < 1_000
+    assert _clip("short").endswith("short")
 
 
 def test_oversized_comment_is_trimmed_but_keeps_every_finding() -> None:

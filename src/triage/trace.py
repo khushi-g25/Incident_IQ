@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Any
 
 
-# Deep links dominate the size of the evidence table, so they are rationed.
-MAX_EVIDENCE_LINKS = 10
+# A New Relic deep link carries the query base64-encoded and runs to ~750
+# characters — three of them cost more than the entire summary. Rationed hard,
+# because the query text beside them is what makes a claim checkable.
+MAX_EVIDENCE_LINKS = 2
 
 
 def _cell(text: str) -> str:
@@ -48,8 +50,8 @@ class TraceEntry:
         a = self.args or {}
         if nrql := a.get("nrql"):
             text = str(nrql)
-            if len(text) > 180:
-                text = text[:177] + "..."
+            if len(text) > 150:
+                text = text[:147] + "..."
             return f"`{text}`"
         if a.get("path"):
             svc = a.get("service", "")
@@ -135,7 +137,7 @@ class RunTrace:
             "log_with_rows": len(log_hits),
         }
 
-    def evidence_markdown(self, max_rows: int = 20, links: bool = True) -> str:
+    def evidence_markdown(self, max_rows: int = 10, links: bool = True) -> str:
         """Appendix for the Jira comment: what the agent actually looked at.
 
         The query text itself goes in the table, so a reader can re-run a claim
@@ -220,16 +222,21 @@ class RunTrace:
             )
 
         lines = ["\n### Logs checked", "", "| # | filter | lines found |", "|---|---|---|"]
-        found_any = False
-        for i, e in enumerate(log_calls, start=1):
+        found_any = any(
+            (e.result_summary or "").endswith("rows")
+            and not (e.result_summary or "").startswith("0 ")
+            for e in log_calls
+        )
+        shown = log_calls[:6]
+        for i, e in enumerate(shown, start=1):
             nrql = str((e.args or {}).get("nrql", ""))
             where = nrql.split("WHERE", 1)[1] if "WHERE" in nrql else "(no filter)"
             for clause in ("SINCE", "ORDER BY", "LIMIT", "FACET"):
                 where = where.split(clause, 1)[0]
             summary = e.result_summary or e.error or ""
-            if summary.endswith("rows") and not summary.startswith("0 "):
-                found_any = True
-            lines.append(f"| {i} | {_cell(where.strip()[:160])} | {_cell(summary)} |")
+            lines.append(f"| {i} | {_cell(where.strip()[:110])} | {_cell(summary)} |")
+        if len(log_calls) > len(shown):
+            lines.append(f"| … | _{len(log_calls) - len(shown)} more log searches_ | |")
 
         if not found_any:
             lines += [

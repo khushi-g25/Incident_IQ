@@ -353,11 +353,27 @@ _SIGNAL_LABEL = {
     "not_checked": "not checked",
 }
 # Jira Cloud rejects a comment over 32,767 characters with
-# CONTENT_LIMIT_EXCEEDED, and posts nothing at all. The budget is set well
-# below that because it is measured on markdown: ADF serialises to roughly
-# 1.8x the source, and unscrubbing redaction placeholders back to real values
-# grows it again. A 39-call run overflowed the limit on its appendix alone.
-MAX_COMMENT_CHARS = 16_000
+# CONTENT_LIMIT_EXCEEDED, and posts nothing at all. The budget sits well below
+# that: it is measured on markdown, ADF serialises to roughly 1.8x the source,
+# and unscrubbing redaction placeholders grows it again. It is also simply a
+# better comment — nobody reads sixteen thousand characters on a ticket.
+MAX_COMMENT_CHARS = 9_000
+
+# Section priorities. 0 is never dropped: the summary, the fix, the evidence and
+# the queries are the comment. Everything else is detail that also lives in the
+# run trace or the prevention document, so it yields first when space is short.
+KEEP, MID, LOW = 0, 2, 3
+
+# Free-text fields arrive model-authored and occasionally enormous. Clip them
+# so a single verbose field cannot crowd out the queries.
+_FIELD_CAP = 900
+
+
+def _clip(text: str, cap: int = _FIELD_CAP) -> str:
+    text = str(text or "")
+    if len(text) <= cap:
+        return text
+    return text[:cap].rsplit(" ", 1)[0] + " …"
 
 _CODE_BUG_LABEL = {
     "yes": "Yes — a defect in the source code",
@@ -559,9 +575,10 @@ def render_markdown(
 ) -> str:
     """Report -> the Jira comment body.
 
-    Ordered for the widest reader first: a support lead or PM should get the
-    whole picture from the summary section without scrolling into anything
-    containing a file path, and an engineer picks up from "Technical detail".
+    Built as prioritised sections rather than one string. A long report used to
+    push the queries appendix off the end and then get truncated part-way, so
+    the two things a reader most wants — the summary and the queries backing it
+    — were the first to disappear. They are KEEP now; the detail yields instead.
     """
     r = normalize_report(report)
     rc = r.get("root_cause", {}) or {}
@@ -570,188 +587,208 @@ def render_markdown(
     pl = r.get("plain_language", {}) or {}
     sig = r.get("signals_confirmed", {}) or {}
 
-    lines = [
+    sections: list[tuple[int, str, str]] = []
+
+    def add(prio: int, name: str, rows: list[str]) -> None:
+        text = "\n".join(rows).rstrip()
+        if text:
+            sections.append((prio, name, text + "\n"))
+
+    add(KEEP, "header", [
         f"*Automated triage* — {_VERDICT_LABEL.get(r['verdict'], r['verdict'])} "
         f"({_CONFIDENCE_LABEL.get(r['confidence'], r['confidence'])})",
         "",
         f"**{r['one_line_summary']}**",
         "",
-    ]
+    ])
 
-    # ---- plain-language section, for readers who are not engineers ----------
-    # The paragraph leads, because most readers stop after it. The labelled
-    # lines below it answer the follow-up questions without re-reading.
-    if pl:
-        if pl.get("summary"):
-            lines += ["### Summary", pl["summary"], ""]
-        for label, key in (
-            ("Who this affected", "customer_impact"),
-            ("Why it happened", "why_it_happened"),
-            ("What we recommend", "what_we_recommend"),
-        ):
-            if pl.get(key):
-                lines += [f"**{label}.** {pl[key]}", ""]
+    if pl.get("summary"):
+        add(KEEP, "summary", ["### Summary", _clip(pl["summary"], 750), ""])
 
-    # ---- the resolution, always rendered ----------------------------------
-    # This is the section people open the ticket for. Previously it was emitted
-    # only when the optional `suggested_fix` happened to be filled in, so most
-    # comments carried a diagnosis and no answer.
-    lines += ["### Recommended fix"]
-    fix = rc.get("suggested_fix") or (
-        "_No fix was proposed for this ticket._ Treat the root cause above as a "
-        "starting point and see the next actions below."
-    )
+    # These restate the summary at more length, so they are the first thing to
+    # go rather than something the reader needs twice.
+    detail_rows: list[str] = []
+    for label, key in (("Who this affected", "customer_impact"),
+                       ("Why it happened", "why_it_happened"),
+                       ("What we recommend", "what_we_recommend")):
+        if pl.get(key):
+            detail_rows += [f"**{label}.** {_clip(pl[key], 400)}", ""]
+    add(MID, "plain-language detail", detail_rows)
+
+    fix_rows = ["### Recommended fix"]
     if rc.get("fix_type"):
-        lines.append(f"_Type of change:_ {_FIX_TYPE_LABEL.get(rc['fix_type'], rc['fix_type'])}")
-        lines.append("")
-    lines += [fix, ""]
+        fix_rows += [f"_Type of change:_ "
+                     f"{_FIX_TYPE_LABEL.get(rc['fix_type'], rc['fix_type'])}", ""]
+    fix_rows += [_clip(rc.get("suggested_fix")
+                       or "_No fix was proposed for this ticket._"), ""]
     if loc:
         where = loc.get("file", "?") + (f":{loc['line']}" if loc.get("line") else "")
-        lines += [f"**Where to make it.** `{where}`"
-                  + (f" — {loc['why']}" if loc.get("why") else ""), ""]
+        fix_rows += [f"**Where to make it.** `{where}`"
+                     + (f" — {_clip(loc['why'], 200)}" if loc.get("why") else ""), ""]
     if rc.get("fix_verification"):
-        lines += [f"**How to confirm it worked.** {rc['fix_verification']}", ""]
+        fix_rows += [f"**How to confirm it worked.** "
+                     f"{_clip(rc['fix_verification'], 300)}", ""]
     if rc.get("workaround"):
-        lines += [f"**Interim workaround.** {rc['workaround']}", ""]
+        fix_rows += [f"**Interim workaround.** {_clip(rc['workaround'], 250)}", ""]
+    add(KEEP, "recommended fix", fix_rows)
 
-    # ---- checklist ---------------------------------------------------------
-    if r.get("checklist"):
-        lines += ["### Checklist", ""]
-        for c in r["checklist"]:
-            if not isinstance(c, dict) or not c.get("item"):
-                continue
-            box = "[x]" if c.get("status") == "done" else "[ ]"
-            tail = ""
-            if c.get("status") == "not_applicable":
-                tail = " _(not applicable)_"
-            elif c.get("owner"):
-                tail = f" — _{c['owner']}_"
-            cat = c.get("category")
-            label = f"**{_CATEGORY_LABEL[cat]}:** " if cat in _CATEGORY_LABEL else ""
-            lines.append(f"- {box} {label}{c['item']}{tail}")
-        lines.append("")
+    ev_rows = ["### Evidence"]
+    for e in (r.get("evidence") or [])[:6]:
+        if not isinstance(e, dict):
+            continue
+        q = f" — source: `{e['query_or_path']}`" if e.get("query_or_path") else ""
+        ev_rows.append(f"- **[{e.get('source','?')}]** "
+                       f"{_clip(e.get('claim',''), 180)} — "
+                       f"{_clip(e.get('detail',''), 220)}{q}")
+    extra = max(0, len(r.get("evidence") or []) - 6)
+    if extra:
+        ev_rows.append(f"- _…and {extra} more, in run `{run_id}`._")
+    add(KEEP, "evidence", ev_rows + [""] if len(ev_rows) > 1 else [])
 
     if caveats:
-        lines += ["### Read this before acting on it"]
-        lines += [f"- {c}" for c in caveats]
-        lines.append("")
+        add(KEEP, "caveats", ["### Read this before acting on it"]
+            + [f"- {c}" for c in caveats] + [""])
 
-    # ---- technical detail --------------------------------------------------
-    lines += ["### Technical detail", ""]
+    cl_rows = ["### Checklist", ""]
+    for c in (r.get("checklist") or [])[:8]:
+        if not isinstance(c, dict) or not c.get("item"):
+            continue
+        box = "[x]" if c.get("status") == "done" else "[ ]"
+        if c.get("status") == "not_applicable":
+            tail = " _(not applicable)_"
+        elif c.get("owner"):
+            tail = f" — _{c['owner']}_"
+        else:
+            tail = ""
+        cat = c.get("category")
+        label = f"**{_CATEGORY_LABEL[cat]}:** " if cat in _CATEGORY_LABEL else ""
+        cl_rows.append(f"- {box} {label}{_clip(c['item'], 200)}{tail}")
+    add(MID, "checklist", cl_rows if len(cl_rows) > 2 else [])
+
+    na_rows = ["### Suggested next actions"]
+    for a in (r.get("next_actions") or [])[:5]:
+        if isinstance(a, dict):
+            na_rows.append(f"- [{a.get('urgency','this_sprint')}] "
+                           f"{_clip(a.get('action',''), 200)} "
+                           f"— _{a.get('owner_hint','')}_")
+    add(MID, "next actions", na_rows + [""] if len(na_rows) > 1 else [])
+
+    td_rows = ["### Technical detail", ""]
     if sig:
-        lines.append(
-            "Signals checked — "
-            + " · ".join(
-                f"{k}: {_SIGNAL_LABEL.get(v, v)}" for k, v in sig.items()
-            )
-            + "\n"
-        )
-    lines += ["**Root cause**", rc.get("explanation", "_not determined_")]
+        td_rows.append("Signals checked — " + " · ".join(
+            f"{k}: {_SIGNAL_LABEL.get(v, v)}" for k, v in sig.items()) + "\n")
+    td_rows += ["**Root cause**", _clip(rc.get("explanation", "_not determined_"))]
     if rc.get("component"):
-        lines.append(f"\nComponent: `{rc['component']}`")
-    if loc and loc.get("symbol"):
-        lines.append(f"Symbol: `{loc['symbol']}`")
+        td_rows.append(f"\nComponent: `{rc['component']}`")
+    if loc.get("symbol"):
+        td_rows.append(f"Symbol: `{loc['symbol']}`")
     if rc.get("alternative_hypotheses"):
-        lines += ["", "**Other explanations still consistent with the evidence**"]
-        lines += [f"- {h}" for h in rc["alternative_hypotheses"]]
+        td_rows += ["", "**Other explanations still consistent with the evidence**"]
+        td_rows += [f"- {_clip(h, 220)}" for h in rc["alternative_hypotheses"][:3]]
+    add(LOW, "technical detail", td_rows + [""])
 
-    lines += ["", "### Evidence"]
-    for e in r.get("evidence", []):
-        # Kept on one line: a wrapped continuation becomes a stray paragraph
-        # once the markdown is converted to Jira's ADF.
-        q = f" — source: `{e['query_or_path']}`" if e.get("query_or_path") else ""
-        lines.append(f"- **[{e['source']}]** {e['claim']} — {e['detail']}{q}")
-
-    lines += ["", "### How widespread it is", br.get("described", "_unknown_")]
+    bl_rows = ["### How widespread it is",
+               _clip(br.get("described", "_unknown_"), 400)]
     if br.get("affected_record_count") is not None:
-        lines.append(
-            f"Measured: {br['affected_record_count']} records "
-            f"({br.get('affected_window','window unspecified')}) "
-            f"via {br.get('measured_by','')}"
-        )
+        measured = f"Measured: {br['affected_record_count']} records"
+        if br.get("affected_window"):
+            measured += f" ({br['affected_window']})"
+        if br.get("measured_by"):
+            measured += f" via {br['measured_by']}"
+        bl_rows.append(measured)
+    add(LOW, "blast radius", bl_rows + [""])
 
     if r.get("unverified"):
-        lines += ["", "### Not verified"]
-        lines += [f"- {u}" for u in r["unverified"]]
+        add(LOW, "not verified", ["### Not verified"]
+            + [f"- {_clip(u, 200)}" for u in r["unverified"][:4]] + [""])
 
-    lines += ["", "### Suggested next actions"]
-    for a in r.get("next_actions", []):
-        lines.append(
-            f"- [{a.get('urgency','this_sprint')}] {a['action']} "
-            f"— _{a['owner_hint']}_"
-        )
-
-    # ---- prevention --------------------------------------------------------
     pv = r.get("prevention") or {}
     if pv:
-        lines += ["", "### Preventing a repeat"]
-        lines.append(
-            f"**Was this a code bug?** {_CODE_BUG_LABEL.get(pv.get('is_code_bug'), 'Not established')}"
-            + (
-                f" ({_PREVENTION_CATEGORY[pv['category']]})"
-                if pv.get("category") in _PREVENTION_CATEGORY
-                else ""
-            )
-        )
-        if pv.get("what_to_change"):
-            lines += ["", f"**What to change.** {pv['what_to_change']}"]
-        if pv.get("how_to_detect_next_time"):
-            lines += ["", f"**How we would catch it next time.** {pv['how_to_detect_next_time']}"]
-        if pv.get("related_risk"):
-            lines += ["", f"**Where else this may exist.** {pv['related_risk']}"]
-        lines.append("")
+        pv_rows = ["### Preventing a repeat",
+                   "**Was this a code bug?** "
+                   f"{_CODE_BUG_LABEL.get(pv.get('is_code_bug'), 'Not established')}"
+                   + (f" ({_PREVENTION_CATEGORY[pv['category']]})"
+                      if pv.get("category") in _PREVENTION_CATEGORY else "")]
+        for label, key in (("What to change", "what_to_change"),
+                           ("How we would catch it next time",
+                            "how_to_detect_next_time")):
+            if pv.get(key):
+                pv_rows += ["", f"**{label}.** {_clip(pv[key], 350)}"]
+        pv_rows += ["", "_Full prevention notes are saved with this run._", ""]
+        add(LOW, "prevention", pv_rows)
 
-    # ---- the closing line: what is actually being proposed -----------------
     if pl.get("solution_summary"):
-        lines += ["", "### In short", pl["solution_summary"], ""]
+        add(KEEP, "in short",
+            ["### In short", _clip(pl["solution_summary"], 400), ""])
 
-    body = "\n".join(lines)
+    # The queries are the point of the appendix; they are never dropped.
+    add(KEEP, "logs checked", [logs_md] if logs_md else [])
+    add(KEEP, "queries run", [
+        "### Queries run",
+        trace_md,
+        "",
+        "_If a link does not open, copy the query text into New Relic's query "
+        "builder._",
+    ])
+
+    return _assemble(sections, run_id)
+
+
+def _assemble(sections: list[tuple[int, str, str]], run_id: str) -> str:
+    """Join the sections, dropping whole low-priority ones until it fits.
+
+    The appendix is *reserved* rather than merely last: it sits at the end of
+    the document, so any truncation that works backwards from the end removes
+    exactly the queries a reader needs to check a claim. Budget is therefore
+    taken for it first, and the findings are fitted into what remains.
+
+    Dropping a named section also beats truncating: a reader can see that
+    "Technical detail" is absent and go to the run trace, whereas a comment cut
+    off mid-sentence just looks broken.
+    """
     footer = (
         f"\n_run {run_id} · generated by incident_iq · verify before acting on it_"
     )
-    # Logs first: it is short and says whether the telemetry side of the
-    # diagnosis stands up. The query table is long and is the part that gets
-    # cut when the comment has to shrink.
-    appendix = "\n".join(
-        [
-            logs_md,
-            "",
-            "### Queries run",
-            trace_md,
-            "",
-            "_If a link does not open, copy the query text into New Relic's "
-            "query builder._",
-        ]
-    )
-    return _fit(body, appendix, footer, run_id)
+    RESERVED = {"in short", "logs checked", "queries run"}
 
+    reserved = [x for x in sections if x[1] in RESERVED]
+    rest = [x for x in sections if x[1] not in RESERVED]
 
-def _fit(body: str, appendix: str, footer: str, run_id: str) -> str:
-    """Keep the comment under Jira's size limit, sacrificing the appendix first.
+    reserved_text = "\n".join(t for _, _, t in reserved)
+    if len(reserved_text) > MAX_COMMENT_CHARS // 2:      # pathological appendix
+        reserved_text = reserved_text[: MAX_COMMENT_CHARS // 2].rsplit("\n", 1)[0]
+        reserved_text += f"\n\n_Query list trimmed — full list in run `{run_id}`._\n"
 
-    Jira answers an over-long comment with CONTENT_LIMIT_EXCEEDED and posts
-    nothing, so the findings must never be the thing that gets dropped. The
-    appendix is reproducible from the run trace; the diagnosis is not.
-    """
-    if len(body) + len(appendix) + len(footer) <= MAX_COMMENT_CHARS:
-        return body + appendix + footer
+    budget = MAX_COMMENT_CHARS - len(reserved_text) - len(footer)
+    dropped: list[str] = []
 
-    trunc_note = (
-        "\n\n_Evidence appendix truncated to fit Jira's comment limit. "
-        f"The full list of queries is in run `{run_id}`._"
-    )
-    room = MAX_COMMENT_CHARS - len(body) - len(footer) - len(trunc_note)
-    if room > 400:
-        trimmed = appendix[:room].rsplit("\n", 1)[0]
-        return body + trimmed + trunc_note + footer
+    def size(sel: list[tuple[int, str, str]]) -> int:
+        return sum(len(t) for _, _, t in sel)
 
-    # The findings alone are at the limit: drop the appendix entirely, and only
-    # then start cutting the report itself.
-    note = (
-        f"\n\n_Evidence appendix omitted to fit Jira's comment limit — see run "
-        f"`{run_id}`._"
-    )
-    if len(body) + len(note) + len(footer) <= MAX_COMMENT_CHARS:
-        return body + note + footer
-    keep = MAX_COMMENT_CHARS - len(note) - len(footer)
-    return body[:keep].rsplit("\n", 1)[0] + note + footer
+    # LOW first, then MID; within a band the later section goes first, which is
+    # the order they were added in decreasing usefulness.
+    for prio in (LOW, MID):
+        for section in [x for x in rest if x[0] == prio][::-1]:
+            if size(rest) <= budget:
+                break
+            rest.remove(section)
+            dropped.append(section[1])
+
+    notice = ""
+    if dropped:
+        notice = ("\n_Omitted to keep this comment readable: "
+                  + ", ".join(reversed(dropped))
+                  + f". All of it is in run `{run_id}`._\n")
+
+    body = "\n".join(t for _, _, t in rest)
+
+    # Last resort: the KEEP findings alone exceed what is left. Trim them, not
+    # the appendix — the summary and the fix survive because they lead. The
+    # notice is appended afterwards so truncation cannot swallow it.
+    if len(body) + len(notice) > budget:
+        trunc = (f"\n\n_Findings truncated to keep this comment readable — full "
+                 f"detail in run `{run_id}`._\n")
+        room = max(0, budget - len(notice) - len(trunc))
+        body = body[:room].rsplit("\n", 1)[0] + trunc
+
+    return body + notice + "\n" + reserved_text + footer
