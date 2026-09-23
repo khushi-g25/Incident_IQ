@@ -10,3 +10,6 @@ __pycache__/
 .runs/
 
 .pytest_cache/
+
+# macOS
+.DS_Store
