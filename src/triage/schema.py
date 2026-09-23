@@ -316,16 +316,40 @@ def validate_report(
     # "high" is reserved for a log line, a data record and a code path agreeing.
     if r.get("confidence") == "high" and len(confirmed) < 2:
         r["confidence"] = "medium"
+        # Don't name the destination: a later rule may lower it again, and a
+        # note claiming "to medium" next to a "low" verdict reads as a bug.
         notes.append(
-            "Confidence lowered from high to medium: only "
-            f"{len(confirmed)} of the three signals (logs, code, data) was "
-            "confirmed."
+            f"Confidence downgraded: only {len(confirmed)} of the three signals "
+            "(logs, code, data) was confirmed, and high is reserved for at "
+            "least two."
         )
 
     if r.get("verdict") == "root_cause_identified" and "code" not in confirmed:
         notes.append(
             "Verdict claims an identified root cause, but the code path was not "
             "confirmed — treat the explanation as a leading hypothesis."
+        )
+
+    # Hearsay check. A report whose only evidence is Jira is a paraphrase of
+    # what someone already wrote on the ticket, not an independent diagnosis.
+    sources = {
+        e.get("source") for e in (r.get("evidence") or []) if isinstance(e, dict)
+    }
+    first_party = sources & {"new_relic", "databricks", "code"}
+    if not first_party and sources:
+        if r.get("verdict") == "root_cause_identified":
+            r["verdict"] = "narrowed_not_confirmed"
+        r["confidence"] = "low"
+        notes.append(
+            "Every piece of evidence in this report came from Jira — existing "
+            "ticket comments or related tickets — with nothing independently "
+            "confirmed in New Relic or the code. This is a summary of what "
+            "people already said, so the verdict has been reduced accordingly."
+        )
+    elif "new_relic" not in sources:
+        notes.append(
+            "No New Relic evidence was cited, so nothing here is corroborated "
+            "by production telemetry."
         )
 
     if stats:
@@ -342,6 +366,31 @@ def validate_report(
             notes.append(
                 f"{empty} of {total} data queries returned no rows; the "
                 "observability side of this diagnosis is thin."
+            )
+
+        nr_q, nr_hit = stats.get("nr_queries", 0), stats.get("nr_with_rows", 0)
+        if nr_q == 0:
+            if r.get("confidence") == "high":
+                r["confidence"] = "low"
+            notes.append(
+                "New Relic was never queried in this run. The diagnosis rests "
+                "entirely on the ticket text and the source code."
+            )
+        elif nr_hit == 0:
+            if r.get("confidence") == "high":
+                r["confidence"] = "low"
+            notes.append(
+                f"All {nr_q} New Relic queries came back empty, so no production "
+                "telemetry corroborates this diagnosis."
+            )
+
+        log_q, log_hit = stats.get("log_queries", 0), stats.get("log_with_rows", 0)
+        if log_q and not log_hit and signals.get("logs") == "absent":
+            notes.append(
+                f"{log_q} log queries were run and none returned a single line. "
+                "That usually means logs are not reaching this account, or are "
+                "not filterable by the attribute used — not that the system was "
+                "quiet. `logs: absent` overstates what was established here."
             )
     return r, notes
 

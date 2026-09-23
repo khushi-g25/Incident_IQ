@@ -301,7 +301,7 @@ def test_high_confidence_needs_two_confirmed_signals() -> None:
     }
     out, notes = validate_report(report, {"data_queries": 0, "empty_results": 0})
     assert out["confidence"] == "medium"
-    assert any("lowered" in n for n in notes)
+    assert any("downgraded" in n for n in notes)
 
 
 def test_all_empty_queries_forces_confidence_down() -> None:
@@ -312,12 +312,85 @@ def test_all_empty_queries_forces_confidence_down() -> None:
     assert any("no rows" in n for n in notes)
 
 
+GOOD_STATS = {
+    "data_queries": 6,
+    "empty_results": 1,
+    "errors": 0,
+    "nr_queries": 5,
+    "nr_with_rows": 4,
+    "log_queries": 2,
+    "log_with_rows": 2,
+}
+
+
 def test_well_supported_report_keeps_high_confidence() -> None:
-    out, notes = validate_report(
-        dict(BASE_REPORT), {"data_queries": 6, "empty_results": 1, "errors": 0}
-    )
+    report = {
+        **BASE_REPORT,
+        "evidence": [
+            {"source": "new_relic", "claim": "c", "detail": "d", "query_or_path": "SELECT 1"},
+            {"source": "code", "claim": "c", "detail": "d", "query_or_path": "a.rb"},
+        ],
+    }
+    out, notes = validate_report(report, GOOD_STATS)
     assert out["confidence"] == "high"
     assert notes == []
+
+
+def test_report_built_only_on_jira_hearsay_is_downgraded() -> None:
+    """The failure mode: the agent paraphrases existing ticket comments and
+    presents that as a diagnosis."""
+    report = {
+        **BASE_REPORT,
+        "evidence": [
+            {"source": "jira", "claim": "a comment said it was fixed in April",
+             "detail": "d", "query_or_path": "SQ-1794"},
+        ],
+    }
+    out, notes = validate_report(report, GOOD_STATS)
+    assert out["verdict"] == "narrowed_not_confirmed"
+    assert out["confidence"] == "low"
+    assert any("came from Jira" in n for n in notes)
+
+
+def test_missing_new_relic_evidence_is_called_out() -> None:
+    report = {
+        **BASE_REPORT,
+        "evidence": [{"source": "code", "claim": "c", "detail": "d", "query_or_path": "a.rb"}],
+    }
+    _, notes = validate_report(report, GOOD_STATS)
+    assert any("New Relic evidence" in n for n in notes)
+
+
+def test_never_querying_new_relic_drops_confidence() -> None:
+    out, notes = validate_report(
+        dict(BASE_REPORT),
+        {"data_queries": 0, "empty_results": 0, "nr_queries": 0, "nr_with_rows": 0},
+    )
+    assert out["confidence"] == "low"
+    assert any("never queried" in n for n in notes)
+
+
+def test_all_empty_new_relic_queries_drops_confidence() -> None:
+    out, notes = validate_report(
+        {**BASE_REPORT, "evidence": [
+            {"source": "new_relic", "claim": "c", "detail": "d", "query_or_path": "SELECT 1"}]},
+        {"data_queries": 4, "empty_results": 4, "nr_queries": 4, "nr_with_rows": 0},
+    )
+    assert out["confidence"] == "low"
+
+
+def test_unreachable_logs_are_not_reported_as_a_quiet_system() -> None:
+    report = {
+        **BASE_REPORT,
+        "signals_confirmed": {"logs": "absent", "code": "confirmed", "data": "confirmed"},
+        "evidence": [
+            {"source": "new_relic", "claim": "c", "detail": "d", "query_or_path": "SELECT 1"}],
+    }
+    _, notes = validate_report(
+        report,
+        {**GOOD_STATS, "log_queries": 9, "log_with_rows": 0},
+    )
+    assert any("not reaching this account" in n for n in notes)
 
 
 def test_uncited_evidence_is_flagged() -> None:
@@ -576,7 +649,56 @@ def test_budget_stops_the_run_but_lets_the_report_through() -> None:
 
 def test_query_stats_count_empty_results() -> None:
     t = RunTrace(ticket="SQ-1")
-    t.add("nr_query", {}, result_summary="0 rows")
-    t.add("nr_query", {}, result_summary="12 rows")
+    t.add("nr_query", {"nrql": "SELECT 1 FROM Transaction"}, result_summary="0 rows")
+    t.add("nr_query", {"nrql": "SELECT 1 FROM Transaction"}, result_summary="12 rows")
     t.add("nr_query", {}, error="boom")
-    assert t.query_stats == {"data_queries": 2, "empty_results": 1, "errors": 1}
+    s = t.query_stats
+    assert s["data_queries"] == 2
+    assert s["empty_results"] == 1
+    assert s["errors"] == 1
+    assert s["nr_queries"] == 2 and s["nr_with_rows"] == 1
+
+
+def test_query_stats_track_log_reachability() -> None:
+    """29 log queries across recorded runs returned rows 4 times. The report
+    has to be able to tell 'quiet system' from 'logs not wired up'."""
+    t = RunTrace(ticket="SQ-1")
+    t.add("nr_query", {"nrql": "SELECT * FROM Log WHERE appName='x'"}, result_summary="0 rows")
+    t.add("nr_query", {"nrql": "SELECT * FROM Log WHERE appName='y'"}, result_summary="0 rows")
+    t.add("nr_query", {"nrql": "SELECT count(*) FROM Transaction"}, result_summary="5 rows")
+    s = t.query_stats
+    assert s["log_queries"] == 2 and s["log_with_rows"] == 0
+
+
+def test_evidence_table_publishes_the_query_text() -> None:
+    """Without the query in the table, a reader cannot re-run or check a claim."""
+    t = RunTrace(ticket="SQ-1")
+    t.add(
+        "nr_query",
+        {"nrql": "SELECT count(*) FROM Log SINCE 1 day ago"},
+        result_summary="3 rows",
+        evidence_link="https://one.newrelic.com/x",
+    )
+    t.add("gh_file", {"service": "punchh-server", "path": "app/models/order.rb"},
+          result_summary="900 chars")
+    md = t.evidence_markdown()
+    assert "SELECT count(*) FROM Log SINCE 1 day ago" in md
+    assert "punchh-server:app/models/order.rb" in md
+    assert "[open](https://one.newrelic.com/x)" in md
+
+
+def test_pipes_in_a_query_do_not_break_the_evidence_table() -> None:
+    t = RunTrace(ticket="SQ-1")
+    t.add("nr_query", {"nrql": "SELECT a | b FROM Log"}, result_summary="1 rows")
+    row = [ln for ln in t.evidence_markdown().splitlines() if "nr_query" in ln][0]
+    assert "\\|" in row                                  # the query's pipe is escaped
+    # Unescaped pipes are the real cell delimiters: 5 columns -> 6 of them.
+    assert row.replace("\\|", "").count("|") == 6
+
+
+def test_permalink_carries_the_account_context() -> None:
+    """Without platform[accountId] the query builder opens with no account
+    selected and runs nothing, which reads as a broken link."""
+    link = NewRelicClient(NR_CFG).permalink("SELECT count(*) FROM Log SINCE 1 day ago")
+    assert "platform[accountId]=1" in link
+    assert "query=SELECT%20count" in link

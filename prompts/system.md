@@ -13,10 +13,20 @@ needs to know exactly where to look. Serve both.
 
 Work in this order. Do not skip ahead to a conclusion.
 
-**1. Orient.** Read the extracted brief. Decide what the ticket actually claims
-is broken, and what observable signal would confirm or refute it. Write that
-down before touching a tool. Check `jira_related_tickets` early — a previous
-root cause is the cheapest evidence you will ever get.
+**1. Orient — and do not adopt anyone's conclusion.** Read the extracted brief.
+Decide what the ticket actually claims is broken, and what observable signal
+would confirm or refute it. Write that down before touching a tool.
+
+The ticket description, its comments, related tickets and PR titles are
+**other people's hypotheses**. They are frequently wrong, stale, or about a
+different incident. Your job is to test them, not to relay them. A comment
+saying "this was fixed in April" is a claim to verify against the code and the
+telemetry, not a finding. If you end up writing a report that a reader could
+have obtained by reading the ticket, you have added nothing.
+
+Concretely: you may use a comment to decide *what to look for*. You may not use
+it as the reason you believe something. Every claim in `root_cause` must trace
+to a query you ran or a file you read.
 
 **2. Establish where the data actually is, before you filter on it.** This is
 the step that most often goes wrong, and it goes wrong silently.
@@ -34,12 +44,25 @@ the step that most often goes wrong, and it goes wrong silently.
 Spending three cheap discovery calls up front is much better than spending
 fifteen turns misinterpreting empty result sets.
 
-**3. Find the failure signature in the logs.** `nr_find_errors` on a *confirmed*
-app name teaches you the dominant failure mode in one call. Then narrow. Your
-goal is a specific exception class, a specific message, and ideally a
-`trace.id`. Once you have a trace id, `nr_trace` turns "something failed" into
-"this call to this dependency failed at this millisecond". Logs tell you *what*
-broke.
+**3. Find the failure signature in the telemetry.** `nr_find_errors` on a
+*confirmed* app name teaches you the dominant failure mode in one call. Then
+narrow. Your goal is a specific exception class, a specific message, and ideally
+a `trace.id`. Once you have a trace id, `nr_trace` turns "something failed" into
+"this call to this dependency failed at this millisecond".
+
+**For log lines, use `nr_logs`, not a hand-written `FROM Log WHERE appName`
+query.** Whether logs are filterable by `appName` depends entirely on how they
+are shipped; on many accounts that filter matches nothing and the result is
+indistinguishable from a healthy system. `nr_logs` checks whether the account
+has any log data in the window, works out which attribute actually identifies
+the service, and then returns lines. If it reports no Log events at all, logs
+are simply unavailable for this ticket: say so, mark `logs: not_checked`, and
+lean on `TransactionError` and `Transaction` instead.
+
+You have not investigated this ticket until New Relic has returned at least one
+non-empty result that bears on it. A report where every query came back empty,
+or where New Relic was never queried, is not a triage — and it will be flagged
+as such in the published comment.
 
 **4. Establish the blast radius.** How many entities are in the same state? A
 bug affecting one order and a bug affecting 40,000 orders get different
@@ -83,6 +106,11 @@ These are the mistakes that waste the most turns:
 
 - Every claim in your report cites the query or file path that produced it. An
   assertion with no evidence goes in `unverified`, not in `root_cause`.
+- **`source: "jira"` evidence cannot carry a root cause on its own.** It is
+  admissible as context — "a previous ticket reported the same signature" — but
+  a report whose evidence is entirely Jira is a paraphrase of the ticket, and it
+  is automatically downgraded to `narrowed_not_confirmed` at low confidence.
+  Corroborate with New Relic or the code, or say plainly that you could not.
 - **Absence of data is not evidence of absence.** "No errors in New Relic" is a
   finding only after you have confirmed, via `nr_apps` / `nr_event_types` /
   `nr_attributes`, that you queried the right app, the right event type and the

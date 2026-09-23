@@ -96,12 +96,20 @@ def build_tools(
     # other through the decorated name raise TypeError at runtime -- which is
     # what silently disabled nr_find_errors and nr_trace on every run.
 
-    async def _run_nrql(nrql: str, purpose: str) -> dict[str, Any]:
+    async def _query(
+        nrql: str, purpose: str
+    ) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
+        """Run once, return both the rows and the tool result.
+
+        Tools that need to branch on the data (is there any log volume at all?)
+        get the rows; tools that just hand the result to the model ignore them.
+        `None` rows means the query failed, which is different from zero rows.
+        """
         try:
             res = nr.nrql(nrql)
         except (NrqlRejected, RuntimeError) as e:
             trace.add("nr_query", {"nrql": nrql, "purpose": purpose}, error=str(e))
-            return _text(f"Query rejected or failed: {e}", is_error=True)
+            return None, _text(f"Query rejected or failed: {e}", is_error=True)
 
         body = redactor.scrub(json.dumps(res.results, indent=2, default=str))
         trace.add(
@@ -124,7 +132,10 @@ def build_tools(
                 "a window in the wrong timezone. Absence of data is only evidence "
                 "once you have confirmed you queried the right place."
             )
-        return _text(body + "\n".join(footer))
+        return res.results, _text(body + "\n".join(footer))
+
+    async def _run_nrql(nrql: str, purpose: str) -> dict[str, Any]:
+        return (await _query(nrql, purpose))[1]
 
     @tool(
         "nr_query",
@@ -226,6 +237,104 @@ def build_tools(
             + "\n\n### Error-level log lines\n"
             + logs["content"][0]["text"]
         )
+
+    # Attributes that identify a service on a Log event, in the order worth
+    # trying. Which one carries data depends entirely on how logs are shipped
+    # (APM forwarder, OTel, Fluent Bit, k8s plugin), so it has to be probed
+    # rather than assumed.
+    _LOG_SERVICE_KEYS = (
+        "appName",
+        "service.name",
+        "entity.name",
+        "service",
+        "kubernetes.containerName",
+        "container_name",
+        "hostname",
+        "host",
+        "filePath",
+    )
+
+    @tool(
+        "nr_logs",
+        "Search actual log lines for a service. Use this instead of writing "
+        "`FROM Log WHERE appName = ...` by hand: it first checks whether the "
+        "account has any Log data in the window at all, then works out which "
+        "attribute identifies your service (log shippers differ — appName, "
+        "service.name, kubernetes.containerName), and only then returns lines. "
+        "`contains` filters the message body. This is the right way to answer "
+        "'are there logs for this?' — a bare appName filter returns zero rows "
+        "on most accounts and looks identical to 'nothing went wrong'.",
+        {"service": str, "window": str, "contains": str},
+        annotations=_READ_ONLY,
+    )
+    async def nr_logs(args: dict[str, Any]) -> dict[str, Any]:
+        window = args.get("window") or pb_window()
+        service = (args.get("service") or "").strip()
+        needle = (args.get("contains") or "").strip()
+        out: list[str] = []
+
+        # 1. Is there any log data at all in this window?
+        rows, total = await _query(
+            f"SELECT count(*) FROM Log {window}",
+            purpose="is there any Log data in this window",
+        )
+        out.append("### Total Log volume in the window\n" + total["content"][0]["text"])
+        volume = next(iter((rows or [{}])[0].values()), None) if rows else None
+        if volume == 0:
+            out.append(
+                "\nThere are NO Log events in this account for this window. Logs "
+                "are not a usable signal for this ticket — do not report 'no "
+                "errors in the logs' as a finding. Set signals_confirmed.logs to "
+                "'not_checked' and rely on TransactionError, Transaction and code."
+            )
+            return _text("\n\n".join(out))
+
+        # 2. Which attribute identifies the service on a Log event?
+        if service:
+            probe = ", ".join(f"filter(count(*), WHERE `{k}` IS NOT NULL) AS `{k}`"
+                              for k in _LOG_SERVICE_KEYS)
+            present = await _run_nrql(
+                f"SELECT {probe} FROM Log {window}",
+                purpose="which service-identifying attributes exist on Log",
+            )
+            out.append(
+                "### Which attributes are populated on Log events\n"
+                + present["content"][0]["text"]
+                + "\n(Zero means that attribute is absent — do not filter on it.)"
+            )
+
+            matches = await _run_nrql(
+                "SELECT count(*) FROM Log WHERE "
+                + " OR ".join(
+                    f"`{k}` LIKE '%{_esc(service)}%'" for k in _LOG_SERVICE_KEYS
+                )
+                + f" {window} LIMIT MAX",
+                purpose=f"does any attribute match service {service!r}",
+            )
+            out.append(
+                f"### Log events matching {service!r} on any identifying attribute\n"
+                + matches["content"][0]["text"]
+            )
+
+        # 3. The lines themselves.
+        clauses = []
+        if service:
+            clauses.append(
+                "(" + " OR ".join(
+                    f"`{k}` LIKE '%{_esc(service)}%'" for k in _LOG_SERVICE_KEYS
+                ) + ")"
+            )
+        if needle:
+            clauses.append(f"message LIKE '%{_esc(needle)}%'")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        lines = await _run_nrql(
+            "SELECT timestamp, level, message, appName, `service.name`, `trace.id` "
+            f"FROM Log{where} {window} ORDER BY timestamp DESC LIMIT 100",
+            purpose=f"log lines for {service or 'all services'}"
+            + (f" containing {needle!r}" if needle else ""),
+        )
+        out.append("### Log lines (newest first)\n" + lines["content"][0]["text"])
+        return _text("\n\n".join(out))
 
     @tool(
         "nr_trace",
@@ -520,6 +629,7 @@ def build_tools(
         nr_event_types,
         nr_attributes,
         nr_find_errors,
+        nr_logs,
         nr_trace,
         # db_catalog,
         # db_template,
@@ -532,6 +642,7 @@ def build_tools(
         "mcp__triage__nr_event_types",
         "mcp__triage__nr_attributes",
         "mcp__triage__nr_find_errors",
+        "mcp__triage__nr_logs",
         "mcp__triage__nr_trace",
         # "mcp__triage__db_catalog",
         # "mcp__triage__db_template",

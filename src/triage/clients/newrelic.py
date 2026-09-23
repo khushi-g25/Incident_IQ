@@ -295,10 +295,20 @@ class NewRelicClient:
         )
 
     def permalink(self, nrql: str) -> str:
-        """Human-clickable query link to paste into the Jira comment as evidence."""
+        """Human-clickable query link to paste into the Jira comment as evidence.
+
+        `platform[accountId]` is what actually sets the account context in New
+        Relic One. Without it the query builder opens with no account selected
+        and runs nothing, which reads as "the link is broken". The raw NRQL is
+        published alongside this link in the evidence table, so a reader can
+        always paste the query by hand if the deep link misbehaves.
+        """
         from urllib.parse import quote
 
+        q = quote(nrql, safe="")
         return (
-            f"https://one.newrelic.com/data-exploration/query-builder"
-            f"?account={self.cfg.account_id}&query={quote(nrql)}"
+            "https://one.newrelic.com/data-exploration/query-builder"
+            f"?platform[accountId]={self.cfg.account_id}"
+            f"&account={self.cfg.account_id}"
+            f"&query={q}"
         )

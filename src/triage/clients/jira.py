@@ -45,9 +45,18 @@ class JiraIssue:
             "\n## Description\n" + (self.description or "(empty)"),
         ]
         if self.comments:
-            parts.append("\n## Comments")
+            # Labelled, not neutral. Handed over as a plain "## Comments"
+            # section, a confident comment reads to the model as the answer and
+            # the whole run becomes a paraphrase of it.
+            parts.append(
+                "\n## Comments — UNVERIFIED CLAIMS BY PEOPLE, NOT EVIDENCE\n"
+                "These are what humans believed at the time. They are often "
+                "wrong, out of date, or about a different incident. Treat each "
+                "one as a hypothesis to test against New Relic and the code. "
+                "Never cite a comment as the basis for a root cause."
+            )
             for c in self.comments[-15:]:
-                parts.append(f"[{c['created']}] {c['author']}: {c['body']}")
+                parts.append(f"[{c['created']}] {c['author']} claims: {c['body']}")
         if self.attachments:
             names = ", ".join(a["filename"] for a in self.attachments)
             parts.append(f"\n## Attachments\n{names}")
