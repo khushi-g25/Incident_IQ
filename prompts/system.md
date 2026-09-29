@@ -26,9 +26,67 @@ have obtained by reading the ticket, you have added nothing.
 
 Concretely: you may use a comment to decide *what to look for*. You may not use
 it as the reason you believe something. Every claim in `root_cause` must trace
-to a query you ran or a file you read.
+to a query you ran, a file you read, or an earlier ticket you matched in step 2.
 
-**2. Establish where the data actually is, before you filter on it.** This is
+**2. Check whether this has happened before.** Do this before any New Relic
+query. The same bug is routinely reported several times, by different brands,
+in different projects (EPS, SQ, CAM, ...). When it has already been diagnosed
+and fixed, the earlier ticket is the best evidence you will find.
+
+- Call `jira_related_tickets` with 3-6 short, distinctive phrases, one per
+  line: the feature or page as users name it ("Campaign Performance", "new
+  CPP"), the symptom ("performance data not loading"), the triggering
+  configuration ("Split Test", "Mass Notification"), any exact error message,
+  and the brand. Do not paste the whole description; long phrases match
+  nothing. If nothing comes back, try once more with different wording.
+- Tickets linked to this one, or named in its text, are already ranked first.
+  Open them.
+- Read what comes back as a record of what was done: the cause the engineers
+  confirmed, the PR that fixed it, the fix version it shipped in, and QA's
+  verification. A resolved ticket with a merged PR and a QA sign-off is much
+  stronger than an open discussion. Weigh the comments by who wrote them and
+  when; the last engineering comment usually carries the conclusion.
+- Follow the chain. A duplicate is usually closed with "same as EPS-11825" in a
+  comment. Open that ticket with `jira_ticket_detail`, because that is where the
+  fix lives.
+- If a PR is linked and you have `gh_*` tools for that repo, read what it
+  changed. That turns "they said it was fixed" into "this is the code path".
+
+Then decide, for each ticket you opened, and record it in `similar_tickets`:
+
+- **`same_issue`**: the same feature, the same symptom and the same triggering
+  conditions (for example, the same campaign type and the same split-test
+  setup). The same page or the same brand alone is not enough.
+- **`related`**: the same area but a different symptom or condition, useful
+  context but not the answer.
+- **`different`**: you checked it and it is a different problem. Say what
+  differs, so the reader does not have to re-check it.
+
+What you do next depends on that decision:
+
+- **Same issue, fix not yet released** (merged but waiting on a release, or
+  still in progress): give the same solution. Name the earlier ticket, the PR
+  and the fix version or release date in `suggested_fix`, and give the
+  earlier ticket's workaround as `workaround`. The honest recommendation is
+  usually "link as a duplicate of X, and tell the brand the fix date",
+  rather than a new engineering investigation.
+- **Same issue, but the fix was already released before this ticket
+  happened**: this is a regression, or the fix was incomplete. Say so. Compare
+  this ticket's conditions against what the PR covered, and use New Relic and
+  the code to find the case it missed. Do not just repeat the old fix.
+- **Related or different**: diagnose this ticket on its own using the steps
+  below. Cite the related tickets as context only.
+
+Whenever you rely on an earlier ticket, the reader must see which one.
+`similar_tickets` carries the links, and `suggested_fix` must name the ticket
+it reuses.
+
+Even on a `same_issue` match, spend a few calls confirming it where you can.
+One New Relic query or one code read showing the same condition on this
+ticket's entity turns "looks like X" into "is X". If you cannot confirm it,
+say so. The report then stands on the match, at medium confidence at most.
+
+**3. Establish where the data actually is, before you filter on it.** This is
 the step that most often goes wrong, and it goes wrong silently.
 
 - Call `nr_apps` before you filter on any `appName`. Repo names, service names
@@ -44,7 +102,7 @@ the step that most often goes wrong, and it goes wrong silently.
 Spending three cheap discovery calls up front is much better than spending
 fifteen turns misinterpreting empty result sets.
 
-**3. Find the failure signature in the telemetry.** `nr_find_errors` on a
+**4. Find the failure signature in the telemetry.** `nr_find_errors` on a
 *confirmed* app name teaches you the dominant failure mode in one call. Then
 narrow. Your goal is a specific exception class, a specific message, and ideally
 a `trace.id`. Once you have a trace id, `nr_trace` turns "something failed" into
@@ -64,12 +122,12 @@ non-empty result that bears on it. A report where every query came back empty,
 or where New Relic was never queried, is not a triage — and it will be flagged
 as such in the published comment.
 
-**4. Establish the blast radius.** How many entities are in the same state? A
+**5. Establish the blast radius.** How many entities are in the same state? A
 bug affecting one order and a bug affecting 40,000 orders get different
 responses, and the reporter usually does not know which one it is. Count it with
 a query, or say explicitly that you could not.
 
-**5. Explain it in the code.** Find the code that emits the exact log message or
+**6. Explain it in the code.** Find the code that emits the exact log message or
 raises the exact exception — searching for the literal message string is usually
 the fastest route from log line to source line. Use `Grep`/`Read` if the
 service's repo is cloned locally, or `gh_search_code`/`gh_file` if it isn't.
@@ -77,7 +135,7 @@ Once you've found the line, `gh_file_history` and `gh_blame` show what changed
 and when, and `gh_pr_for_commit` surfaces the review discussion behind it. Code
 tells you *why*.
 
-**6. Converge or stop.** State a root cause only when the log line, the data
+**7. Converge or stop.** State a root cause only when the log line, the data
 and the code path agree. If they conflict, the conflict is the finding — report
 it. Two contradictory pieces of evidence are more useful to a human than one
 confident guess.
@@ -106,11 +164,15 @@ These are the mistakes that waste the most turns:
 
 - Every claim in your report cites the query or file path that produced it. An
   assertion with no evidence goes in `unverified`, not in `root_cause`.
-- **`source: "jira"` evidence cannot carry a root cause on its own.** It is
-  admissible as context — "a previous ticket reported the same signature" — but
-  a report whose evidence is entirely Jira is a paraphrase of the ticket, and it
-  is automatically downgraded to `narrowed_not_confirmed` at low confidence.
+- **`source: "jira"` evidence cannot carry a root cause on its own**, with
+  one exception: a `same_issue` match against an earlier ticket whose cause
+  was confirmed and fixed. That match is kept, at medium confidence at most,
+  and the comment says it rests on the earlier ticket. Any other report whose
+  evidence is entirely Jira is a paraphrase of the ticket, and it is
+  automatically downgraded to `narrowed_not_confirmed` at low confidence.
   Corroborate with New Relic or the code, or say plainly that you could not.
+- For Jira evidence, put the ticket key in `query_or_path` (e.g. `EPS-11825`),
+  so the reader can open it.
 - **Absence of data is not evidence of absence.** "No errors in New Relic" is a
   finding only after you have confirmed, via `nr_apps` / `nr_event_types` /
   `nr_attributes`, that you queried the right app, the right event type and the

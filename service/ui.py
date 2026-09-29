@@ -498,6 +498,20 @@ const FIX_TYPES = {
   needs_more_investigation: 'more investigation needed before a fix is clear'
 };
 const URGENCY = { now: 'Now', this_sprint: 'This sprint', backlog: 'Backlog' };
+const MATCH = { same_issue: 'Same issue', related: 'Related', different: 'Checked — different' };
+const FIX_STATUS = {
+  fix_released: 'fix released',
+  fix_merged_not_released: 'fix merged, not yet released',
+  fix_in_progress: 'fix in progress',
+  no_fix: 'no fix recorded',
+  unknown: 'fix status unknown'
+};
+
+function ticketLink(t) {
+  return t.url
+    ? '<a href="' + escapeHtml(t.url) + '" target="_blank" rel="noopener">' + escapeHtml(t.key) + '</a>'
+    : '<code>' + escapeHtml(t.key) + '</code>';
+}
 
 // The solution, lifted out of the structured report so it has its own place on
 // the page instead of only existing inside the comment body.
@@ -505,6 +519,15 @@ function renderFix(report) {
   const el = document.getElementById('fixCard');
   const rc = (report && report.root_cause) || {};
   const parts = [];
+
+  const similar = ((report && report.similar_tickets) || []).filter(t => t && t.key);
+  const same = similar.filter(t => t.match === 'same_issue');
+  if (same.length) {
+    parts.push('<p><strong>Based on</strong> ' + same.map(ticketLink).join(', ') +
+               ', which had the same problem' +
+               (FIX_STATUS[same[0].fix_status] ? ' (' + FIX_STATUS[same[0].fix_status] + ')' : '') +
+               '.</p>');
+  }
 
   if (!rc.suggested_fix) {
     parts.push('<p class="muted">The agent did not propose a fix for this ticket. ' +
@@ -527,6 +550,20 @@ function renderFix(report) {
     if (rc.workaround) {
       parts.push('<p><strong>Interim workaround.</strong> ' + inlineMd(rc.workaround) + '</p>');
     }
+  }
+
+  if (similar.length) {
+    parts.push('<p><strong>Similar past tickets</strong></p><ul>' + similar.map(t =>
+      '<li><span class="urg">' + escapeHtml(MATCH[t.match] || 'Checked') + '</span> ' +
+      ticketLink(t) + ' — ' + inlineMd(t.reason || '') +
+      (t.match !== 'different' && t.their_resolution
+        ? ' <em>Their resolution:</em> ' + inlineMd(t.their_resolution) : '') +
+      (t.match !== 'different' && FIX_STATUS[t.fix_status]
+        ? ' <em>(' + FIX_STATUS[t.fix_status] + ')</em>' : '') +
+      ((t.pull_requests || []).filter(p => /^https?:/.test(p)).map(p =>
+        ' <a href="' + escapeHtml(p) + '" target="_blank" rel="noopener">PR</a>').join('')) +
+      '</li>'
+    ).join('') + '</ul>');
   }
 
   const actions = (report && report.next_actions) || [];

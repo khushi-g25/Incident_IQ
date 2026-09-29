@@ -18,8 +18,30 @@ from ..config import JiraConfig
 
 FIELDS = (
     "summary,description,status,priority,labels,components,issuetype,"
-    "created,updated,reporter,assignee,comment,attachment,customfield_10000"
+    "created,updated,reporter,assignee,comment,attachment,customfield_10000,"
+    "issuelinks,resolution,resolutiondate,fixVersions"
 )
+
+# Enough to rank a search hit without a second request per candidate.
+SEARCH_FIELDS = ["summary", "status", "resolution", "created", "project"]
+
+# The lookahead keeps release names like "EPS-09-29-2026" or "EPS-09.29.2026"
+# from reading as the ticket EPS-09.
+_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b(?![-.]\d)")
+
+
+def mentioned_keys(text: str, exclude: str = "") -> list[str]:
+    """Ticket keys named in free text, in order of first mention.
+
+    "Same issue as EPS-11825" is how duplicates usually get closed — in a
+    comment, not as a formal issue link — so the key in the prose is often the
+    only pointer to the ticket that holds the actual fix.
+    """
+    seen: list[str] = []
+    for k in _KEY_RE.findall(text or ""):
+        if k != exclude and k not in seen:
+            seen.append(k)
+    return seen
 
 
 class JiraCommentError(RuntimeError):
@@ -68,6 +90,13 @@ class JiraIssue:
     created: str
     comments: list[dict[str, str]] = field(default_factory=list)
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    id: str = ""
+    resolution: str = ""
+    resolved: str = ""
+    fix_versions: list[str] = field(default_factory=list)
+    # {"key", "relation", "summary", "status"} — relation is phrased from this
+    # issue's side, e.g. "is duplicated by".
+    links: list[dict[str, str]] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
     def as_prompt_text(self) -> str:
@@ -94,6 +123,15 @@ class JiraIssue:
         if self.attachments:
             names = ", ".join(a["filename"] for a in self.attachments)
             parts.append(f"\n## Attachments\n{names}")
+        if self.links:
+            parts.append(
+                "\n## Linked issues — open each with jira_ticket_detail"
+            )
+            for ln in self.links:
+                parts.append(
+                    f"- {self.key} {ln['relation']} {ln['key']} "
+                    f"[{ln['status']}]: {ln['summary']}"
+                )
         return "\n".join(parts)
 
 
@@ -144,28 +182,86 @@ class JiraClient:
                 }
                 for a in (f.get("attachment") or [])
             ],
+            id=str(d.get("id") or ""),
+            resolution=(f.get("resolution") or {}).get("name", ""),
+            resolved=f.get("resolutiondate") or "",
+            fix_versions=[v["name"] for v in (f.get("fixVersions") or []) if v.get("name")],
+            links=[_link(ln) for ln in (f.get("issuelinks") or []) if _link(ln)],
             raw=d,
         )
 
+    def browse_url(self, key: str) -> str:
+        return f"{self.cfg.base_url.rstrip('/')}/browse/{key}"
+
     def search(self, jql: str, limit: int = 20) -> list[str]:
-        """JQL search.
+        return [i["key"] for i in self.search_issues(jql, limit, fields=["key"])]
+
+    def search_issues(
+        self, jql: str, limit: int = 20, fields: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """JQL search, returning the raw issue objects.
 
         Atlassian retired POST /rest/api/2/search in 2025; it answers 404/410 on
         current Cloud sites, which silently disabled related-ticket lookup. Try
         the replacement first and keep the old path as a fallback for Server/DC.
         """
-        payload = {"jql": jql, "maxResults": limit, "fields": ["key"]}
+        payload = {"jql": jql, "maxResults": limit, "fields": fields or SEARCH_FIELDS}
         last: Exception | None = None
         for path in ("/rest/api/3/search/jql", "/rest/api/2/search"):
             try:
                 r = self._http.post(path, json=payload)
                 r.raise_for_status()
-                return [i["key"] for i in r.json().get("issues", [])]
+                return r.json().get("issues", [])
             except httpx.HTTPStatusError as e:
                 if e.response.status_code not in (404, 410):
                     raise
                 last = e
         raise RuntimeError(f"No usable Jira search endpoint: {last}")
+
+    def pull_requests(self, issue_id: str) -> list[dict[str, str]]:
+        """PRs shown in the issue's Development panel.
+
+        This is the dev-status API behind Jira's own UI: undocumented, but the
+        only place the GitHub-for-Jira link lives. The detail call returns
+        nothing unless `applicationType` is the exact instance-type key the
+        summary reports (e.g. `oAuth-com.github.integration.production`, not
+        `GitHub`), so ask the summary first. Any failure means "no PRs known",
+        never a failed run.
+        """
+        if not issue_id:
+            return []
+        try:
+            r = self._http.get(
+                "/rest/dev-status/latest/issue/summary", params={"issueId": issue_id}
+            )
+            r.raise_for_status()
+            by_type = (
+                r.json().get("summary", {}).get("pullrequest", {}).get("byInstanceType")
+                or {}
+            )
+            prs: list[dict[str, str]] = []
+            for app_type in by_type:
+                d = self._http.get(
+                    "/rest/dev-status/latest/issue/detail",
+                    params={
+                        "issueId": issue_id,
+                        "applicationType": app_type,
+                        "dataType": "pullrequest",
+                    },
+                )
+                d.raise_for_status()
+                for det in d.json().get("detail", []):
+                    for p in det.get("pullRequests", []):
+                        prs.append({
+                            "name": p.get("name", ""),
+                            "status": p.get("status", ""),
+                            "url": p.get("url", ""),
+                            "repo": p.get("repositoryName", ""),
+                            "updated": p.get("lastUpdate", ""),
+                        })
+            return prs
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return []
 
     def fetch_attachment_text(self, content_url: str, max_bytes: int = 400_000) -> str:
         """Pull a text/log attachment. Binary types are skipped by the caller."""
@@ -230,6 +326,22 @@ class JiraClient:
             404: "Issue not found, or the account cannot see it.",
         }
         return f"Jira returned {code}. {detail or hints.get(code, '')}".strip()
+
+
+def _link(ln: dict[str, Any]) -> dict[str, str] | None:
+    """One `issuelinks` entry, phrased from this issue's side of the link."""
+    other = ln.get("outwardIssue") or ln.get("inwardIssue")
+    if not other:
+        return None
+    kind = ln.get("type") or {}
+    relation = kind.get("outward") if "outwardIssue" in ln else kind.get("inward")
+    f = other.get("fields") or {}
+    return {
+        "key": other.get("key", "?"),
+        "relation": relation or kind.get("name", "relates to"),
+        "summary": f.get("summary", ""),
+        "status": (f.get("status") or {}).get("name", "?"),
+    }
 
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")

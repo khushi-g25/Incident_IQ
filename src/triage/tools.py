@@ -26,7 +26,7 @@ from claude_agent_sdk import ToolAnnotations, create_sdk_mcp_server, tool
 
 # from .clients.databricks import DatabricksClient, SqlRejected
 from .clients.github import GithubClient, GithubRequestError
-from .clients.jira import JiraClient
+from .clients.jira import JiraClient, mentioned_keys
 from .clients.newrelic import NewRelicClient, NrqlRejected
 from .config import Settings
 from .redact import Redactor
@@ -59,18 +59,128 @@ def _text(payload: str, is_error: bool = False) -> dict[str, Any]:
     return out
 
 
+_JIRA_NOISE = [
+    (re.compile(r"\[~accountid:[^\]]+\]"), "@user"),
+    (re.compile(r"!image-[^!]+!"), "[image]"),
+    (re.compile(r"\{code(?::[^}]*)?\}"), "```"),
+    (re.compile(r"[ \t]*\n[ \t\n]*"), " "),
+]
+
+
+def _tidy(text: str) -> str:
+    """Strip the markup that costs characters and carries nothing: mention
+    ids, inline image references, and line breaks inside a comment."""
+    for pattern, repl in _JIRA_NOISE:
+        text = pattern.sub(repl, text or "")
+    return text.strip()
+
+
+_CHASER = re.compile(
+    r"any (further )?updates?|just (wanted|checking) to|thank(s| you)|"
+    r"could you (please )?(check|look)|please (check|help|look)|gentle reminder",
+    re.IGNORECASE,
+)
+_FINDING = re.compile(
+    r"root cause|cause|found|confirmed|verified|fix|deployed|release|same (issue )?as|"
+    r"duplicate|workaround|pull/|PR\b|because|not (being )?(routed|returned|populated)",
+    re.IGNORECASE,
+)
+
+
+def select_comments(comments: list[dict[str, str]], limit: int = 12) -> list[dict[str, str]]:
+    """The comments that carry the diagnosis, in their original order.
+
+    A long support ticket is mostly chasers ("any updates?"), hand-offs and bot
+    notices; the comment that states the cause sits in the middle, where a
+    plain last-N cut drops it. Keep every comment that reads like a finding,
+    plus the latest two for current status, and drop the rest first.
+    """
+    def noise(c: dict[str, str]) -> bool:
+        body = _tidy(c.get("body", ""))
+        return (
+            c.get("author") == "Automation for Jira"
+            or len(body) < 40
+            or (len(body) < 300 and bool(_CHASER.search(body)) and not _FINDING.search(body))
+        )
+
+    idx = [i for i, c in enumerate(comments) if not noise(c)]
+    if len(idx) > limit:
+        latest = set(idx[-2:])
+        scored = sorted(
+            (i for i in idx if i not in latest),
+            key=lambda i: -len(_FINDING.findall(comments[i].get("body", ""))),
+        )
+        idx = sorted(latest | set(scored[: limit - len(latest)]))
+    return [comments[i] for i in idx]
+
+
+def _phrases(raw: str) -> list[str]:
+    """Split the model's input into searchable phrases.
+
+    JQL text search treats most punctuation as reserved, so a raw error message
+    pasted straight in either errors or silently matches nothing. Apostrophes
+    stay: brand names like "Torchy's" are some of the best search terms there
+    are.
+    """
+    out: list[str] = []
+    for part in re.split(r"[\n;|]+", raw[:1_000]):
+        words = re.sub(r"[^\w\s'-]", " ", part).split()[:6]
+        phrase = " ".join(words)
+        if len(phrase) >= 3 and phrase.lower() not in (p.lower() for p in out):
+            out.append(phrase)
+    return out[:6]
+
+
+def related_ticket_queries(
+    phrases: list[str], projects: tuple[str, ...] = (), exclude: str = ""
+) -> list[tuple[str, float, str]]:
+    """(label, weight, jql) for each search the related-ticket tool runs.
+
+    Every phrase is searched on its own, all of them together, and as loose
+    words, and the hits are merged by weight. No single query shape finds
+    everything: an exact phrase misses a ticket that words it differently, and
+    loose words over a long description match half the project.
+    """
+    scope = []
+    if projects:
+        scope.append(f"project in ({', '.join(projects)})")
+    if exclude:
+        scope.append(f"key != {exclude}")
+
+    def jql(clause: str) -> str:
+        return " AND ".join(scope + [clause]) + " ORDER BY created DESC"
+
+    def exact(p: str) -> str:
+        return f'text ~ "\\"{p}\\""'
+
+    out: list[tuple[str, float, str]] = []
+    if len(phrases) > 1:
+        out.append(("all phrases", 3.0, jql(" AND ".join(exact(p) for p in phrases))))
+    out += [(f'"{p}"', 1.0, jql(exact(p))) for p in phrases]
+    words = list(dict.fromkeys(w for p in phrases for w in p.split() if len(w) > 2))
+    if len(words) > 1:
+        out.append(("keywords", 1.0, jql(f'text ~ "{" ".join(words[:8])}"')))
+    return out
+
+
 def build_tools(
     settings: Settings,
     redactor: Redactor,
     trace: RunTrace,
     default_window: str | None = None,
+    ticket_key: str = "",
+    linked_keys: list[str] | None = None,
 ):
     """Returns (mcp_server_config, allowed_tool_names).
 
     `default_window` is the SINCE/UNTIL clause derived from the ticket. The
     discovery tools fall back to it so that "what app names exist?" is answered
     for the incident window rather than an arbitrary last-24-hours.
+
+    `ticket_key` keeps the ticket under triage out of its own related-ticket
+    results; `linked_keys` are its issue links, which outrank any text match.
     """
+    linked_keys = linked_keys or []
 
     nr = NewRelicClient(settings.newrelic)
     # db = DatabricksClient(settings.databricks)
@@ -570,58 +680,188 @@ def build_tools(
 
     # ---------------------------------------------------------------------- Jira
 
+    def _ticket_detail(key: str, budget: int) -> tuple[str, list[str]]:
+        """Everything a past ticket says about how it was resolved.
+
+        Returns (markdown, keys mentioned in its text). The resolution of a
+        past ticket is rarely in one place: the cause is in a comment halfway
+        down, the fix is a PR in the Development panel, and the release it
+        shipped in is the fix version. A duplicate usually has none of those,
+        only "same as EPS-11825" in its last comment — hence the mentions.
+        """
+        issue = jira.get_issue(key)
+        prs = jira.pull_requests(issue.id)
+        body_text = issue.description + "\n".join(c["body"] for c in issue.comments)
+        mentions = mentioned_keys(body_text, exclude=key)
+
+        lines = [
+            f"### {key}: {issue.summary}",
+            f"Link: {jira.browse_url(key)}",
+            f"Status: {issue.status} | Resolution: {issue.resolution or 'unresolved'}"
+            + (f" ({issue.resolved[:10]})" if issue.resolved else "")
+            + f" | Created: {issue.created[:10]}"
+            + (f" | Fix version: {', '.join(issue.fix_versions)}" if issue.fix_versions else ""),
+        ]
+        if prs:
+            lines.append("Pull requests:")
+            lines += [f"- [{p['status']}] {p['name']} — {p['url']}" for p in prs]
+        if issue.links:
+            lines.append("Linked issues:")
+            lines += [
+                f"- {ln['relation']} {ln['key']} [{ln['status']}]: {ln['summary']}"
+                for ln in issue.links
+            ]
+        if mentions:
+            lines.append(
+                "Tickets named in its text (a duplicate usually points at the "
+                "ticket holding the fix): " + ", ".join(mentions[:8])
+            )
+        lines += ["", "Description:", _tidy(issue.description)[:900]]
+        if issue.comments:
+            kept = select_comments(issue.comments)
+            lines += ["", f"Comments ({len(kept)} of {len(issue.comments)} shown, "
+                          "chasers and bot notices dropped, oldest first):"]
+            lines += [
+                f"[{c['created'][:10]}] {c['author']}: {_tidy(c['body'])[:500]}"
+                for c in kept
+            ]
+        text = redactor.scrub("\n".join(lines))
+        if len(text) > budget:
+            text = text[:budget].rsplit("\n", 1)[0] + "\n... [trimmed — call jira_ticket_detail for the rest]"
+        trace.add(
+            "jira_ticket_detail", {"key": key},
+            result_summary=f"{issue.status}/{issue.resolution or 'unresolved'}, "
+            f"{len(issue.comments)} comments, {len(prs)} PRs",
+            evidence_link=jira.browse_url(key),
+        )
+        return text, mentions
+
     @tool(
         "jira_related_tickets",
-        "Search Jira for tickets with a similar signature. If this bug has been "
-        "seen before, the previous root cause is the cheapest evidence available.",
-        {"text": str},
+        "Find earlier tickets describing the same problem, in any project, and "
+        "read how they were resolved. Call this early, before New Relic: if the "
+        "problem has been fixed before, the earlier diagnosis and its PR are the "
+        "cheapest evidence you will get. Pass 3-6 short distinctive phrases, one "
+        "per line — the feature or page, the symptom, the configuration that "
+        "triggers it, an exact error message, the brand name. The top matches "
+        "come back with their comments, linked PRs and fix versions.",
+        {"phrases": str},
         annotations=_READ_ONLY,
     )
     async def jira_related_tickets(args: dict[str, Any]) -> dict[str, Any]:
-        # JQL text search treats most punctuation as reserved, so a raw error
-        # message pasted straight in either errors or silently matches nothing.
-        raw = args["text"][:300]
-        terms = re.sub(r"[^\w\s.-]", " ", raw)
-        words = [w for w in terms.split() if len(w) > 2][:12]
-        if not words:
-            return _text("Nothing searchable in that text.", is_error=True)
-        phrase = " ".join(words)
+        phrases = _phrases(args.get("phrases") or args.get("text") or "")
+        if not phrases:
+            return _text("Nothing searchable in those phrases.", is_error=True)
 
-        attempts = [
-            f'project = {settings.jira.project_key} AND text ~ "{phrase}" '
-            "ORDER BY created DESC",
-            # Narrower fallback: the distinctive words only, summary-scoped.
-            f'project = {settings.jira.project_key} AND summary ~ "'
-            + " ".join(words[:5])
-            + '" ORDER BY created DESC',
-        ]
-        keys: list[str] = []
+        # One query per phrase rather than one long phrase: a single
+        # twelve-word phrase has to appear verbatim to match, so it found
+        # nothing even when three tickets described the identical problem.
+        # Tickets matching more of the phrases rank higher.
+        scores: dict[str, float] = {}
+        why: dict[str, list[str]] = {}
+        meta: dict[str, dict[str, Any]] = {}
         errors: list[str] = []
-        jql = attempts[0]
-        for candidate in attempts:
+        queries = related_ticket_queries(
+            phrases, settings.jira.related_projects, exclude=ticket_key
+        )
+        for label, weight, jql in queries:
             try:
-                keys = jira.search(candidate, limit=10)
+                hits = jira.search_issues(jql, limit=15)
             except Exception as e:  # noqa: BLE001 - surfaced to the model
-                errors.append(f"{candidate[:60]}...: {e}")
+                errors.append(f"{label}: {e}")
                 continue
-            jql = candidate
-            if keys:
-                break
-        if not keys and errors:
-            trace.add("jira_related_tickets", {"jql": jql}, error="; ".join(errors)[:300])
-            return _text("Jira search failed: " + "; ".join(errors), is_error=True)
-        trace.add("jira_related_tickets", {"jql": jql}, f"{len(keys)} matches")
-        if not keys:
-            return _text("No similar tickets found.")
-        out = []
-        for k in keys[:5]:
-            issue = jira.get_issue(k)
-            resolution = issue.comments[-1]["body"][:600] if issue.comments else ""
-            out.append(
-                f"### {k} [{issue.status}] {issue.summary}\n"
-                f"{redactor.scrub(resolution)}"
+            for h in hits:
+                k = h["key"]
+                scores[k] = scores.get(k, 0) + weight
+                why.setdefault(k, []).append(label)
+                meta[k] = h.get("fields") or {}
+        # The current ticket's own links outrank any text match.
+        for k in linked_keys:
+            if k != ticket_key:
+                scores[k] = scores.get(k, 0) + 5
+                why.setdefault(k, []).insert(0, "linked to or named in this ticket")
+        # Resolved tickets carry the answer; break ties towards them.
+        for k, f in meta.items():
+            if f.get("resolution"):
+                scores[k] += 0.5
+
+        trace.add(
+            "jira_related_tickets",
+            {"phrases": " | ".join(phrases), "jql": queries[0][2] if queries else ""},
+            result_summary=f"{len(scores)} candidates"
+            + (f", {len(errors)} queries failed" if errors else ""),
+            error="; ".join(errors)[:300] if errors and not scores else None,
+        )
+        if not scores:
+            if errors:
+                return _text("Jira search failed: " + "; ".join(errors), is_error=True)
+            return _text(
+                "No similar tickets found for: " + "; ".join(phrases)
+                + ". Try different wording — the feature as a user would name "
+                "it, or the exact error text — before concluding this is new."
             )
+
+        ranked = sorted(scores, key=lambda k: -scores[k])[:10]
+        out = [
+            "## Candidate tickets (best first)",
+            *(
+                f"- {k} [{(meta.get(k, {}).get('status') or {}).get('name', '?')}"
+                f" / {(meta.get(k, {}).get('resolution') or {}).get('name', 'unresolved')}] "
+                f"{meta.get(k, {}).get('summary', '(linked issue)')} — "
+                f"{jira.browse_url(k)} — matched: {', '.join(why[k])}"
+                for k in ranked
+            ),
+            "",
+            "## Full detail on the strongest matches",
+        ]
+        # Open the top three, then follow any ticket they point at: a duplicate
+        # closed with "same as X" is only useful once X has been read.
+        queue, opened = list(ranked[:3]), []
+        while queue and len(opened) < 5:
+            k = queue.pop(0)
+            if k in opened or k == ticket_key:
+                continue
+            try:
+                text, mentions = _ticket_detail(k, budget=3_200)
+            except Exception as e:  # noqa: BLE001 - one bad ticket must not sink the rest
+                out.append(f"### {k}: could not be read ({e})")
+                opened.append(k)
+                continue
+            out.append(text)
+            opened.append(k)
+            queue += [m for m in mentions[:2] if m not in opened and m != ticket_key]
+        rest = [k for k in ranked if k not in opened]
+        if rest:
+            out.append(
+                "\nNot opened: " + ", ".join(rest)
+                + ". Use jira_ticket_detail on any whose summary looks like the same problem."
+            )
+        out.append(
+            "\nDecide for each opened ticket whether it is the same problem "
+            "(same feature, same symptom, same triggering conditions), a related "
+            "one, or a different one — and record that in `similar_tickets`."
+        )
         return _text("\n\n".join(out))
+
+    @tool(
+        "jira_ticket_detail",
+        "Read one Jira ticket in full: status, resolution, fix version, linked "
+        "issues, the pull requests in its Development panel, and its comments. "
+        "Use it on a candidate from jira_related_tickets, on a linked issue, or "
+        "on any ticket key a comment mentions.",
+        {"key": str},
+        annotations=_READ_ONLY,
+    )
+    async def jira_ticket_detail(args: dict[str, Any]) -> dict[str, Any]:
+        key = str(args.get("key") or "").strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9]{1,9}-\d+", key):
+            return _text(f"{key!r} is not a Jira issue key.", is_error=True)
+        try:
+            text, _ = _ticket_detail(key, budget=9_000)
+        except Exception as e:  # noqa: BLE001 - surfaced to the model
+            trace.add("jira_ticket_detail", {"key": key}, error=str(e)[:300])
+            return _text(f"Could not read {key}: {e}", is_error=True)
+        return _text(text)
 
     tools = [
         nr_query,
@@ -635,6 +875,7 @@ def build_tools(
         # db_template,
         # db_query,
         jira_related_tickets,
+        jira_ticket_detail,
     ]
     names = [
         "mcp__triage__nr_query",
@@ -648,6 +889,7 @@ def build_tools(
         # "mcp__triage__db_template",
         # "mcp__triage__db_query",
         "mcp__triage__jira_related_tickets",
+        "mcp__triage__jira_ticket_detail",
     ]
 
     if gh is not None:

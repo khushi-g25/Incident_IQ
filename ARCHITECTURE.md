@@ -127,7 +127,7 @@ flowchart TB
         DISC["<b>Discovery</b><br/>nr_apps · nr_event_types<br/>nr_attributes"]
         NR["<b>Telemetry</b><br/>nr_query · nr_find_errors<br/>nr_logs · nr_trace"]
         GH["<b>Code</b><br/>gh_search_code · gh_file<br/>gh_blame · gh_file_history<br/>gh_pr_for_commit"]
-        JR["<b>History</b><br/>jira_related_tickets"]
+        JR["<b>History</b><br/>jira_related_tickets<br/>jira_ticket_detail"]
     end
 
     HOOK{"guardrails.py<br/>PreToolUse"}

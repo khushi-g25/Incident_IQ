@@ -42,6 +42,11 @@ class JiraConfig:
     email: str
     api_token: str
     project_key: str = "SQ"
+    # Projects searched for earlier tickets with the same problem. Empty means
+    # every project the account can see: the same bug is routinely filed as an
+    # EPS ticket, then a CAM or SQ one, so pinning this to `project_key` is
+    # what made the related-ticket search miss the tickets that mattered.
+    related_projects: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -164,6 +169,11 @@ class Settings:
                 email=_req("JIRA_EMAIL"),
                 api_token=_req("JIRA_API_TOKEN"),
                 project_key=os.environ.get("JIRA_PROJECT_KEY", "EPS"),
+                related_projects=tuple(
+                    p.strip().upper()
+                    for p in os.environ.get("JIRA_RELATED_PROJECTS", "").split(",")
+                    if p.strip()
+                ),
             ),
             newrelic=NewRelicConfig(
                 api_key=_req("NEW_RELIC_API_KEY"),

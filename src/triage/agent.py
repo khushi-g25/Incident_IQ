@@ -28,7 +28,7 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
-from .clients.jira import JiraClient, JiraIssue
+from .clients.jira import JiraClient, JiraIssue, mentioned_keys
 from .config import REPO_ROOT, Settings
 from .extract import TicketBrief, extract_brief
 from .guardrails import build_hooks
@@ -129,9 +129,12 @@ async def triage(
     _log("✅ [gate] ticket passed — proceeding to agent")
 
     # ---- Phase 3: agent loop ---------------------------------------------
-    _log("🛠️  [setup] building tools (New Relic, Jira search) ...")
+    _log("🛠️  [setup] building tools (New Relic, Jira history) ...")
+    linked = [ln["key"] for ln in issue.links]
+    linked += [k for k in mentioned_keys(raw_text, exclude=issue.key) if k not in linked]
     server, allowed = build_tools(
-        settings, redactor, trace, default_window=brief.nrql_window()
+        settings, redactor, trace, default_window=brief.nrql_window(),
+        ticket_key=issue.key, linked_keys=linked,
     )
     repo_roots = settings.playbook.repo_paths()
     _log(f"🛠️  [setup] tools ready: {', '.join(a.split('__')[-1] for a in allowed)}")
@@ -319,5 +322,6 @@ def _build_prompt(
 ## Playbook notes
 {pb.triage_notes or "(none)"}
 
-Work the method in order. Budget: {settings.agent.max_turns} turns. Finish with
-the structured report."""
+Work the method in order — step 2 (earlier tickets) comes before any New Relic
+query. Budget: {settings.agent.max_turns} turns. Finish with the structured
+report, including `similar_tickets`."""

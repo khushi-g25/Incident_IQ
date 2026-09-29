@@ -8,6 +8,7 @@ paragraph that reads like a conclusion but isn't one.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 REPORT_SCHEMA: dict[str, Any] = {
@@ -20,6 +21,7 @@ REPORT_SCHEMA: dict[str, Any] = {
         "one_line_summary",
         "plain_language",
         "root_cause",
+        "similar_tickets",
         "evidence",
         "blast_radius",
         "prevention",
@@ -180,6 +182,55 @@ REPORT_SCHEMA: dict[str, Any] = {
                     "description": "Other causes consistent with the same "
                     "evidence, and what would distinguish them. Required "
                     "thinking whenever confidence is not high.",
+                },
+            },
+        },
+        "similar_tickets": {
+            "type": "array",
+            "description": "Every earlier ticket you opened while checking "
+            "whether this problem has happened before, with your judgement on "
+            "each. Empty only if jira_related_tickets found nothing. A ticket "
+            "is `same_issue` only when the feature, the symptom and the "
+            "triggering conditions all match — not merely the same page or "
+            "the same brand. When one is `same_issue`, reuse its fix in "
+            "`root_cause.suggested_fix` and say which ticket it came from.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["key", "url", "match", "reason"],
+                "properties": {
+                    "key": {"type": "string"},
+                    "url": {"type": "string"},
+                    "match": {
+                        "type": "string",
+                        "enum": ["same_issue", "related", "different"],
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "What matches and what differs, "
+                        "concretely: 'same split-test notification campaign "
+                        "on the new CPP, same missing sales metrics'.",
+                    },
+                    "their_resolution": {
+                        "type": "string",
+                        "description": "The cause and fix recorded on that "
+                        "ticket, as its comments, PRs and fix version state it.",
+                    },
+                    "fix_status": {
+                        "type": "string",
+                        "enum": [
+                            "fix_released",
+                            "fix_merged_not_released",
+                            "fix_in_progress",
+                            "no_fix",
+                            "unknown",
+                        ],
+                    },
+                    "pull_requests": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "URLs of the PRs that fixed it.",
+                    },
                 },
             },
         },
@@ -407,10 +458,39 @@ _FIX_TYPE_LABEL = {
     "needs_more_investigation": "more investigation needed before a fix is clear",
 }
 
+_MATCH_LABEL = {
+    "same_issue": "Same issue",
+    "related": "Related",
+    "different": "Checked — different problem",
+}
+_FIX_STATUS_LABEL = {
+    "fix_released": "fix released",
+    "fix_merged_not_released": "fix merged, not yet released",
+    "fix_in_progress": "fix in progress",
+    "no_fix": "no fix recorded",
+    "unknown": "fix status unknown",
+}
+
 _NESTED_FIELDS = (
     "root_cause", "blast_radius", "plain_language", "signals_confirmed", "prevention",
 )
-_LIST_FIELDS = ("evidence", "next_actions", "unverified", "checklist")
+_LIST_FIELDS = ("evidence", "next_actions", "unverified", "checklist", "similar_tickets")
+
+
+def _same_issue(report: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        t for t in (report.get("similar_tickets") or [])
+        if isinstance(t, dict) and t.get("match") == "same_issue" and t.get("key")
+    ]
+
+
+def _ticket_link(t: dict[str, Any]) -> str:
+    return f"[{t['key']}]({t['url']})" if t.get("url") else f"`{t['key']}`"
+
+
+def _pr_link(url: str) -> str:
+    m = re.search(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", url)
+    return f"[{m.group(1)}#{m.group(2)}]({url})" if m else f"[PR]({url})"
 
 
 def normalize_report(report: dict[str, Any]) -> dict[str, Any]:
@@ -507,7 +587,20 @@ def validate_report(
         e.get("source") for e in (r.get("evidence") or []) if isinstance(e, dict)
     }
     first_party = sources & {"new_relic", "databricks", "code"}
-    if not first_party and sources:
+    same = _same_issue(r)
+    if not first_party and sources and same:
+        # Matching a ticket whose cause was already diagnosed and fixed is a
+        # real finding, not hearsay — but it is the earlier ticket's evidence,
+        # not this one's, so it cannot be high.
+        if r.get("confidence") == "high":
+            r["confidence"] = "medium"
+        notes.append(
+            "This diagnosis rests on matching an earlier ticket ("
+            + ", ".join(t["key"] for t in same)
+            + ") rather than on New Relic or the code for this ticket. Confirm "
+            "the match before relying on the earlier fix."
+        )
+    elif not first_party and sources:
         if r.get("verdict") == "root_cause_identified":
             r["verdict"] = "narrowed_not_confirmed"
         r["confidence"] = "low"
@@ -616,6 +709,16 @@ def render_markdown(
     add(MID, "plain-language detail", detail_rows)
 
     fix_rows = ["### Recommended fix"]
+    same = _same_issue(r)
+    if same:
+        basis = ", ".join(_ticket_link(t) for t in same)
+        status = same[0].get("fix_status")
+        fix_rows += [
+            f"**Based on {basis}**, which had the same problem"
+            + (f" ({_FIX_STATUS_LABEL[status]})" if status in _FIX_STATUS_LABEL else "")
+            + ".",
+            "",
+        ]
     if rc.get("fix_type"):
         fix_rows += [f"_Type of change:_ "
                      f"{_FIX_TYPE_LABEL.get(rc['fix_type'], rc['fix_type'])}", ""]
@@ -631,6 +734,26 @@ def render_markdown(
     if rc.get("workaround"):
         fix_rows += [f"**Interim workaround.** {_clip(rc['workaround'], 250)}", ""]
     add(KEEP, "recommended fix", fix_rows)
+
+    st_rows = ["### Similar past tickets"]
+    order = {"same_issue": 0, "related": 1, "different": 2}
+    similar = sorted(
+        (t for t in (r.get("similar_tickets") or []) if isinstance(t, dict) and t.get("key")),
+        key=lambda t: order.get(t.get("match"), 3),
+    )
+    for t in similar[:5]:
+        row = (f"- **{_MATCH_LABEL.get(t.get('match'), 'Checked')}:** {_ticket_link(t)}"
+               f" — {_clip(t.get('reason', ''), 220)}")
+        if t.get("match") != "different":
+            if t.get("their_resolution"):
+                row += f" _Their resolution:_ {_clip(t['their_resolution'], 260)}"
+            if t.get("fix_status") in _FIX_STATUS_LABEL:
+                row += f" _Status:_ {_FIX_STATUS_LABEL[t['fix_status']]}."
+            prs = [p for p in (t.get("pull_requests") or []) if str(p).startswith("http")]
+            if prs:
+                row += " PR: " + ", ".join(_pr_link(p) for p in prs[:3])
+        st_rows.append(row)
+    add(KEEP, "similar tickets", st_rows + [""] if len(st_rows) > 1 else [])
 
     ev_rows = ["### Evidence"]
     for e in (r.get("evidence") or [])[:6]:

@@ -56,7 +56,8 @@ Jira webhook / CLI
 │   │   attribute identifies logs)                        │
 │   ├ nr_trace                                            │
 │   ├ db_catalog / db_template / db_query  (disabled)     │
-│   ├ jira_related_tickets                                │
+│   ├ jira_related_tickets / jira_ticket_detail           │
+│   │   (earlier tickets, their PRs + fix versions)       │
 │   └ gh_file / gh_file_history / gh_blame /               │
 │     gh_pr_for_commit / gh_search_code (optional)        │
 │                                                         │
@@ -132,6 +133,17 @@ The things that will cost you an afternoon each if you don't know them.
   markdown, and sacrifices the evidence appendix before the diagnosis.
 - Attached `.log`/`.txt` files are usually the richest signal in the whole
   ticket. Fetch them via the attachment `content` URL with the same auth.
+- **The same bug is filed more than once, in more than one project.** A CAM
+  ticket's earlier diagnosis usually lives on an EPS ticket, so the
+  related-ticket search covers every project unless `JIRA_RELATED_PROJECTS`
+  narrows it. It runs one JQL query per short phrase and merges the hits;
+  a single long exact phrase matches nothing. Duplicates are usually closed with
+  "same as EPS-11825" in a comment rather than a formal link, so the tool
+  follows ticket keys named in comments to reach the ticket with the fix.
+- PRs linked to a ticket come from the undocumented dev-status API
+  (`/rest/dev-status/latest/issue/detail`). It returns an empty list unless
+  `applicationType` is the exact instance-type key the `.../issue/summary`
+  call reports, e.g. `oAuth-com.github.integration.production`, not `GitHub`.
 
 ### New Relic
 
